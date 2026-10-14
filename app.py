@@ -25,7 +25,6 @@ if input_method == "Upload Excel File":
             df = pd.read_excel(uploaded_file)
         
         # --- 1. CLEAN COLUMN NAMES ---
-        # Remove extra spaces and make them easier to search
         df.columns = [str(c).strip() for c in df.columns]
         df = df.loc[:, ~df.columns.duplicated()] # Remove accidental duplicate columns
 
@@ -33,7 +32,6 @@ if input_method == "Upload Excel File":
         def find_col(keywords):
             for col in df.columns:
                 c = str(col).lower()
-                # Check if ALL keywords exist in the column name
                 if all(k in c for k in keywords):
                     return col
             return None
@@ -64,9 +62,12 @@ if input_method == "Upload Excel File":
         if c_bobtail: rename_map[c_bobtail] = 'Bobtail number'
 
         df.rename(columns=rename_map, inplace=True)
+        
+        # --- MAGIC FIX: Remove duplicates AGAIN after renaming ---
+        # This prevents the TypeError if Excel had hidden duplicate headers
+        df = df.loc[:, ~df.columns.duplicated()]
 
         # --- 3. HANDLE BLANKS FOR 1-TANK SITES ---
-        # This is the magic fix: Convert to numbers and turn all blanks (NaN) into 0.0
         tank_cols = ['Qty before supply Tank 1', 'QTY supplied Tank 1', 'Qty before supply Tank 2', 'QTY supplied Tank 2']
         for col in tank_cols:
             if col in df.columns:
@@ -108,92 +109,4 @@ elif input_method == "Manual Entry":
                     'Site ID': site_id, 'Region': region, 'Cluster': cluster,
                     'Qty before supply Tank 1': qty_before_t1, 'QTY supplied Tank 1': qty_supplied_t1,
                     'Qty before supply Tank 2': qty_before_t2, 'QTY supplied Tank 2': qty_supplied_t2,
-                    'Approved CPD': approved_cpd, 'Supply Date': pd.to_datetime(supply_date), 'Bobtail number': bobtail
-                }
-                st.session_state.manual_data.append(new_record)
-                st.success("Record added!")
-
-    if st.session_state.manual_data:
-        st.write("**Current Manual Entries:**")
-        temp_df = pd.DataFrame(st.session_state.manual_data)
-        st.dataframe(temp_df, use_container_width=True)
-        if st.button("🗑️ Clear All Manual Entries"):
-            st.session_state.manual_data = []
-            st.rerun()
-        df = temp_df
-
-# --- 3. THE ACTION ENGINE ---
-if not df.empty:
-    st.divider()
-    st.subheader("📈 Processed Data & Analysis")
-    
-    if 'Supply Date' in df.columns and 'Site ID' in df.columns:
-        # Sort data chronologically per site
-        df = df.sort_values(by=['Site ID', 'Supply Date'])
-
-        # Calculate Totals (Tank 1 + Tank 2). Blanks are already 0, so this works perfectly!
-        df['Total QTY Before Supply'] = df['Qty before supply Tank 1'] + df['Qty before supply Tank 2']
-        df['Total QTY Supplied'] = df['QTY supplied Tank 1'] + df['QTY supplied Tank 2']
-
-        # Get NEXT row's data for the same Site ID to calculate consumption
-        df['Next_Total_Before'] = df.groupby('Site ID')['Total QTY Before Supply'].shift(-1)
-        df['Next_Supply_Date'] = df.groupby('Site ID')['Supply Date'].shift(-1)
-
-        # Calculate Days between this supply and the next
-        df['Days_Diff'] = (df['Next_Supply_Date'] - df['Supply Date']).dt.days
-        
-        # --- FORMULA 1: ESTIMATED CPD ---
-        # (Total QTY Before + Total QTY Supplied) - Total QTY Before in Next Supply
-        df['Total_Consumed'] = (df['Total QTY Before Supply'] + df['Total QTY Supplied']) - df['Next_Total_Before']
-        df['Estimated CPD'] = df['Total_Consumed'] / df['Days_Diff']
-        df['Estimated CPD'] = df['Estimated CPD'].where(df['Days_Diff'] > 0, 0) 
-
-        # --- FORMULA 2: NEXT SUPPLY DATE ---
-        # (Total QTY After Supply) / Estimated CPD
-        df['Total_QTY_After_Supply'] = df['Total QTY Before Supply'] + df['Total QTY Supplied']
-        df['Days_Fuel_Last'] = df['Total_QTY_After_Supply'] / df['Estimated CPD']
-        df['Days_Fuel_Last'] = df['Days_Fuel_Last'].where(df['Estimated CPD'] > 0, 0) 
-        
-        df['Estimated Next Supply Date'] = df.apply(
-            lambda row: row['Supply Date'] + timedelta(days=row['Days_Fuel_Last']) if row['Days_Fuel_Last'] > 0 else pd.NaT, axis=1
-        )
-
-        # Variance
-        df['CPD Variance'] = df['Approved CPD'] - df['Estimated CPD']
-        
-        def get_status(var, app):
-            if app == 0: return "⚪ N/A"
-            pct = abs(var) / app
-            if pct <= 0.05: return " On Target"
-            elif pct <= 0.15: return "🟡 Slight Variance"
-            else: return "🔴 High Variance"
-        df['Variance Status'] = df.apply(lambda r: get_status(r['CPD Variance'], r['Approved CPD']), axis=1)
-
-    # --- 4. DISPLAY ---
-    def highlight_var(val):
-        if val > 0: return 'background-color: #d4edda'
-        elif val < 0: return 'background-color: #f8d7da'
-        return ''
-
-    display_cols = ['Site ID', 'Region', 'Cluster', 'Total QTY Supplied', 'Total QTY Before Supply',
-                    'Approved CPD', 'Estimated CPD', 'CPD Variance', 'Variance Status', 
-                    'Supply Date', 'Estimated Next Supply Date', 'Bobtail number']
-    final_cols = [c for c in display_cols if c in df.columns]
-    display_df = df[final_cols]
-
-    styled_df = display_df.style.map(highlight_var, subset=['CPD Variance'])
-    if 'Estimated Next Supply Date' in styled_df.columns:
-        styled_df = styled_df.format({'Estimated Next Supply Date': lambda x: x.strftime('%Y-%m-%d') if pd.notnull(x) else ''})
-    if 'Supply Date' in styled_df.columns:
-        styled_df = styled_df.format({'Supply Date': lambda x: x.strftime('%Y-%m-%d') if pd.notnull(x) else ''})
-
-    st.dataframe(styled_df, use_container_width=True, hide_index=True)
-
-    csv = display_df.to_csv(index=False).encode('utf-8')
-    st.download_button(label="📥 Download Processed Data", data=csv, file_name="processed_supply_data.csv", mime="text/csv")
-
-else:
-    if input_method == "Upload Excel File":
-        st.info("👆 Please upload an Excel or CSV file to begin.")
-    else:
-        st.info("👆 Please add records using the form above.")
+                    'Approved CPD': approved_cpd, 'Supply
