@@ -24,54 +24,31 @@ if input_method == "Upload Excel File":
         else:
             df = pd.read_excel(uploaded_file)
         
-        # --- BULLETPROOF COLUMN FINDER ---
-        def find_col(keywords):
-            for col in df.columns:
-                c = str(col).lower()
-                # Check if ALL keywords exist in the column name
-                if all(k in c for k in keywords):
-                    return col
-            return None
+        # --- 1. CLEAN AND FIX DUPLICATES ---
+        # Remove any hidden spaces in column names
+        df.columns = [str(c).strip() for c in df.columns]
+        # Remove duplicate columns (Fixes the "QTY supplied Tank 1" appearing twice)
+        df = df.loc[:, ~df.columns.duplicated()]
 
-        # Search for columns using flexible keywords
-        c_t1_b = find_col(['before', 'tank', '1'])
-        c_t1_s = find_col(['suppl', 'tank', '1']) # Matches 'supplied' and 'supply'
-        c_t2_b = find_col(['before', 'tank', '2'])
-        c_t2_s = find_col(['suppl', 'tank', '2'])
-        c_cpd  = find_col(['approved', 'cpd'])
-        c_date = find_col(['supply', 'date'])
-        c_site = find_col(['site']) 
-        c_region = find_col(['region'])
-        c_cluster = find_col(['cluster'])
-        c_bobtail = find_col(['bobtail'])
+        # --- 2. ADD MISSING COLUMNS ---
+        # Since your file doesn't have "Qty before supply", we add them as 0.0
+        if 'Qty before supply Tank 1' not in df.columns:
+            df['Qty before supply Tank 1'] = 0.0
+        if 'Qty before supply Tank 2' not in df.columns:
+            df['Qty before supply Tank 2'] = 0.0
 
-        # Map found columns to standard names
-        rename_map = {}
-        if c_t1_b: rename_map[c_t1_b] = 'Qty before supply Tank 1'
-        if c_t1_s: rename_map[c_t1_s] = 'QTY supplied Tank 1'
-        if c_t2_b: rename_map[c_t2_b] = 'Qty before supply Tank 2'
-        if c_t2_s: rename_map[c_t2_s] = 'QTY supplied Tank 2'
-        if c_cpd:  rename_map[c_cpd] = 'Approved CPD'
-        if c_date: rename_map[c_date] = 'Supply Date'
-        if c_site: rename_map[c_site] = 'Site ID'
-        if c_region: rename_map[c_region] = 'Region'
-        if c_cluster: rename_map[c_cluster] = 'Cluster'
-        if c_bobtail: rename_map[c_bobtail] = 'Bobtail number'
-
-        df.rename(columns=rename_map, inplace=True)
-
-        # --- VALIDATION: Stop gracefully if columns are missing ---
-        required_cols = ['Qty before supply Tank 1', 'QTY supplied Tank 1', 'Qty before supply Tank 2', 'QTY supplied Tank 2', 'Approved CPD', 'Supply Date']
+        # --- 3. ENSURE REQUIRED COLUMNS EXIST ---
+        # We only check for the columns that are actually in your file
+        required_cols = ['QTY supplied Tank 1', 'QTY supplied Tank 2', 'Approved CPD', 'Supply Date']
         missing_cols = [col for col in required_cols if col not in df.columns]
         
         if missing_cols:
-            st.error(f"❌ I couldn't find the following columns in your file: **{missing_cols}**")
-            st.info(f"👉 Your file currently has these columns: **{list(df.columns)}**")
-            st.stop() # Stops the app safely without crashing
+            st.error(f"❌ Still missing columns: **{missing_cols}**")
+            st.info(f" Your file currently has these columns: **{list(df.columns)}**")
+            st.stop() 
 
         # Ensure Date is a date
-        if 'Supply Date' in df.columns:
-            df['Supply Date'] = pd.to_datetime(df['Supply Date'], errors='coerce')
+        df['Supply Date'] = pd.to_datetime(df['Supply Date'], errors='coerce')
 
 elif input_method == "Manual Entry":
     st.subheader("Enter Supply Details")
@@ -108,7 +85,7 @@ elif input_method == "Manual Entry":
         st.write("**Current Manual Entries:**")
         temp_df = pd.DataFrame(st.session_state.manual_data)
         st.dataframe(temp_df, use_container_width=True)
-        if st.button("️ Clear All Manual Entries"):
+        if st.button("🗑️ Clear All Manual Entries"):
             st.session_state.manual_data = []
             st.rerun()
         df = temp_df
@@ -116,7 +93,7 @@ elif input_method == "Manual Entry":
 # --- 3. THE ACTION ENGINE ---
 if not df.empty:
     st.divider()
-    st.subheader(" Processed Data & Analysis")
+    st.subheader("📈 Processed Data & Analysis")
     
     # Ensure numeric
     for col in ['Qty before supply Tank 1', 'QTY supplied Tank 1', 'Qty before supply Tank 2', 'QTY supplied Tank 2', 'Approved CPD']:
@@ -136,6 +113,8 @@ if not df.empty:
         df['Prev_Supply_Date'] = df.groupby('Site ID')['Supply Date'].shift(1)
 
         df['Days_Diff'] = (df['Supply Date'] - df['Prev_Supply_Date']).dt.days
+        
+        # Calculate Total Consumed
         df['Total_Consumed'] = (df['Prev_Total_Before'] + df['Prev_Total_Supplied']) - df['Total QTY Before Supply']
 
         # Estimated CPD
@@ -180,7 +159,7 @@ if not df.empty:
     st.dataframe(styled_df, use_container_width=True, hide_index=True)
 
     csv = display_df.to_csv(index=False).encode('utf-8')
-    st.download_button(label="📥 Download Processed Data", data=csv, file_name="processed_supply_data.csv", mime="text/csv")
+    st.download_button(label=" Download Processed Data", data=csv, file_name="processed_supply_data.csv", mime="text/csv")
 
 else:
     if input_method == "Upload Excel File":
