@@ -180,4 +180,102 @@ if not df.empty:
         ).dt.days
         
         # Formula 1: Estimated CPD
-        df['Total_Con
+        df['Total_Consumed'] = (
+            df['Total QTY Before Supply'] + df['Total QTY Supplied']
+        ) - df['Next_Total_Before']
+        
+        df['Estimated CPD'] = df['Total_Consumed'] / df['Days_Diff']
+        df['Estimated CPD'] = df['Estimated CPD'].where(
+            df['Days_Diff'] > 0, 0
+        ) 
+
+        # Formula 2: Next Supply Date
+        df['Total_QTY_After_Supply'] = (
+            df['Total QTY Before Supply'] + df['Total QTY Supplied']
+        )
+        
+        df['Days_Fuel_Last'] = (
+            df['Total_QTY_After_Supply'] / df['Estimated CPD']
+        )
+        df['Days_Fuel_Last'] = df['Days_Fuel_Last'].where(
+            df['Estimated CPD'] > 0, 0
+        ) 
+        
+        def calc_next_date(row):
+            if row['Days_Fuel_Last'] > 0:
+                return row['Supply Date'] + timedelta(
+                    days=row['Days_Fuel_Last']
+                )
+            else:
+                return pd.NaT
+
+        df['Estimated Next Supply Date'] = df.apply(
+            calc_next_date, axis=1
+        )
+
+        # Variance
+        df['CPD Variance'] = df['Approved CPD'] - df['Estimated CPD']
+        
+        def get_status(var, app):
+            if app == 0: 
+                return "⚪ N/A"
+            pct = abs(var) / app
+            if pct <= 0.05: 
+                return "🟢 On Target"
+            elif pct <= 0.15: 
+                return " Slight Variance"
+            else: 
+                return "🔴 High Variance"
+                
+        df['Variance Status'] = df.apply(
+            lambda r: get_status(r['CPD Variance'], r['Approved CPD']), 
+            axis=1
+        )
+
+    # 4. Display
+    def highlight_var(val):
+        if val > 0: 
+            return 'background-color: #d4edda'
+        elif val < 0: 
+            return 'background-color: #f8d7da'
+        return ''
+
+    display_cols = [
+        'Site ID', 'Region', 'Cluster', 'Total QTY Supplied', 
+        'Total QTY Before Supply', 'Approved CPD', 'Estimated CPD', 
+        'CPD Variance', 'Variance Status', 'Supply Date', 
+        'Estimated Next Supply Date', 'Bobtail number'
+    ]
+    
+    final_cols = [c for c in display_cols if c in df.columns]
+    display_df = df[final_cols]
+
+    styled_df = display_df.style.map(
+        highlight_var, subset=['CPD Variance']
+    )
+    
+    if 'Estimated Next Supply Date' in styled_df.columns:
+        styled_df = styled_df.format({
+            'Estimated Next Supply Date': lambda x: x.strftime('%Y-%m-%d') if pd.notnull(x) else ''
+        })
+        
+    if 'Supply Date' in styled_df.columns:
+        styled_df = styled_df.format({
+            'Supply Date': lambda x: x.strftime('%Y-%m-%d') if pd.notnull(x) else ''
+        })
+
+    st.dataframe(styled_df, use_container_width=True, hide_index=True)
+
+    csv = display_df.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label="📥 Download Processed Data", 
+        data=csv, 
+        file_name="processed_supply_data.csv", 
+        mime="text/csv"
+    )
+
+else:
+    if input_method == "Upload Excel File":
+        st.info("👆 Please upload an Excel or CSV file to begin.")
+    else:
+        st.info(" Please add records using the form above.")
