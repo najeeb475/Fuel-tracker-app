@@ -24,31 +24,63 @@ if input_method == "Upload Excel File":
         else:
             df = pd.read_excel(uploaded_file)
         
-        # --- 1. CLEAN AND FIX DUPLICATES ---
-        # Remove any hidden spaces in column names
+        # --- 1. CLEAN COLUMN NAMES ---
+        # Remove extra spaces and make them easier to search
         df.columns = [str(c).strip() for c in df.columns]
-        # Remove duplicate columns (Fixes the "QTY supplied Tank 1" appearing twice)
-        df = df.loc[:, ~df.columns.duplicated()]
+        df = df.loc[:, ~df.columns.duplicated()] # Remove accidental duplicate columns
 
-        # --- 2. ADD MISSING COLUMNS ---
-        # Since your file doesn't have "Qty before supply", we add them as 0.0
-        if 'Qty before supply Tank 1' not in df.columns:
-            df['Qty before supply Tank 1'] = 0.0
-        if 'Qty before supply Tank 2' not in df.columns:
-            df['Qty before supply Tank 2'] = 0.0
+        # --- 2. BULLETPROOF COLUMN FINDER (Case-Insensitive) ---
+        def find_col(keywords):
+            for col in df.columns:
+                c = str(col).lower()
+                # Check if ALL keywords exist in the column name
+                if all(k in c for k in keywords):
+                    return col
+            return None
 
-        # --- 3. ENSURE REQUIRED COLUMNS EXIST ---
-        # We only check for the columns that are actually in your file
-        required_cols = ['QTY supplied Tank 1', 'QTY supplied Tank 2', 'Approved CPD', 'Supply Date']
-        missing_cols = [col for col in required_cols if col not in df.columns]
-        
-        if missing_cols:
-            st.error(f"❌ Still missing columns: **{missing_cols}**")
-            st.info(f" Your file currently has these columns: **{list(df.columns)}**")
-            st.stop() 
+        # Search for columns
+        c_t1_b = find_col(['before', 'tank', '1'])
+        c_t1_s = find_col(['suppl', 'tank', '1']) 
+        c_t2_b = find_col(['before', 'tank', '2'])
+        c_t2_s = find_col(['suppl', 'tank', '2'])
+        c_cpd  = find_col(['approved', 'cpd'])
+        c_date = find_col(['supply', 'date'])
+        c_site = find_col(['site']) 
+        c_region = find_col(['region'])
+        c_cluster = find_col(['cluster'])
+        c_bobtail = find_col(['bobtail'])
+
+        # Map to standard names
+        rename_map = {}
+        if c_t1_b: rename_map[c_t1_b] = 'Qty before supply Tank 1'
+        if c_t1_s: rename_map[c_t1_s] = 'QTY supplied Tank 1'
+        if c_t2_b: rename_map[c_t2_b] = 'Qty before supply Tank 2'
+        if c_t2_s: rename_map[c_t2_s] = 'QTY supplied Tank 2'
+        if c_cpd:  rename_map[c_cpd] = 'Approved CPD'
+        if c_date: rename_map[c_date] = 'Supply Date'
+        if c_site: rename_map[c_site] = 'Site ID'
+        if c_region: rename_map[c_region] = 'Region'
+        if c_cluster: rename_map[c_cluster] = 'Cluster'
+        if c_bobtail: rename_map[c_bobtail] = 'Bobtail number'
+
+        df.rename(columns=rename_map, inplace=True)
+
+        # --- 3. HANDLE BLANKS FOR 1-TANK SITES ---
+        # This is the magic fix: Convert to numbers and turn all blanks (NaN) into 0.0
+        tank_cols = ['Qty before supply Tank 1', 'QTY supplied Tank 1', 'Qty before supply Tank 2', 'QTY supplied Tank 2']
+        for col in tank_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+            else:
+                df[col] = 0.0 # Create column as 0 if it doesn't exist at all
+
+        # Ensure Approved CPD is numeric
+        if 'Approved CPD' in df.columns:
+            df['Approved CPD'] = pd.to_numeric(df['Approved CPD'], errors='coerce').fillna(0.0)
 
         # Ensure Date is a date
-        df['Supply Date'] = pd.to_datetime(df['Supply Date'], errors='coerce')
+        if 'Supply Date' in df.columns:
+            df['Supply Date'] = pd.to_datetime(df['Supply Date'], errors='coerce')
 
 elif input_method == "Manual Entry":
     st.subheader("Enter Supply Details")
@@ -95,35 +127,33 @@ if not df.empty:
     st.divider()
     st.subheader("📈 Processed Data & Analysis")
     
-    # Ensure numeric
-    for col in ['Qty before supply Tank 1', 'QTY supplied Tank 1', 'Qty before supply Tank 2', 'QTY supplied Tank 2', 'Approved CPD']:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-
-    # Totals
-    df['Total QTY Before Supply'] = df['Qty before supply Tank 1'] + df['Qty before supply Tank 2']
-    df['Total QTY Supplied'] = df['QTY supplied Tank 1'] + df['QTY supplied Tank 2']
-
     if 'Supply Date' in df.columns and 'Site ID' in df.columns:
+        # Sort data chronologically per site
         df = df.sort_values(by=['Site ID', 'Supply Date'])
 
-        # Previous row data
-        df['Prev_Total_Supplied'] = df.groupby('Site ID')['Total QTY Supplied'].shift(1)
-        df['Prev_Total_Before'] = df.groupby('Site ID')['Total QTY Before Supply'].shift(1)
-        df['Prev_Supply_Date'] = df.groupby('Site ID')['Supply Date'].shift(1)
+        # Calculate Totals (Tank 1 + Tank 2). Blanks are already 0, so this works perfectly!
+        df['Total QTY Before Supply'] = df['Qty before supply Tank 1'] + df['Qty before supply Tank 2']
+        df['Total QTY Supplied'] = df['QTY supplied Tank 1'] + df['QTY supplied Tank 2']
 
-        df['Days_Diff'] = (df['Supply Date'] - df['Prev_Supply_Date']).dt.days
+        # Get NEXT row's data for the same Site ID to calculate consumption
+        df['Next_Total_Before'] = df.groupby('Site ID')['Total QTY Before Supply'].shift(-1)
+        df['Next_Supply_Date'] = df.groupby('Site ID')['Supply Date'].shift(-1)
+
+        # Calculate Days between this supply and the next
+        df['Days_Diff'] = (df['Next_Supply_Date'] - df['Supply Date']).dt.days
         
-        # Calculate Total Consumed
-        df['Total_Consumed'] = (df['Prev_Total_Before'] + df['Prev_Total_Supplied']) - df['Total QTY Before Supply']
-
-        # Estimated CPD
+        # --- FORMULA 1: ESTIMATED CPD ---
+        # (Total QTY Before + Total QTY Supplied) - Total QTY Before in Next Supply
+        df['Total_Consumed'] = (df['Total QTY Before Supply'] + df['Total QTY Supplied']) - df['Next_Total_Before']
         df['Estimated CPD'] = df['Total_Consumed'] / df['Days_Diff']
         df['Estimated CPD'] = df['Estimated CPD'].where(df['Days_Diff'] > 0, 0) 
 
-        # Next Supply Date
-        df['Days_Fuel_Last'] = df['Total QTY Supplied'] / df['Estimated CPD']
+        # --- FORMULA 2: NEXT SUPPLY DATE ---
+        # (Total QTY After Supply) / Estimated CPD
+        df['Total_QTY_After_Supply'] = df['Total QTY Before Supply'] + df['Total QTY Supplied']
+        df['Days_Fuel_Last'] = df['Total_QTY_After_Supply'] / df['Estimated CPD']
         df['Days_Fuel_Last'] = df['Days_Fuel_Last'].where(df['Estimated CPD'] > 0, 0) 
+        
         df['Estimated Next Supply Date'] = df.apply(
             lambda row: row['Supply Date'] + timedelta(days=row['Days_Fuel_Last']) if row['Days_Fuel_Last'] > 0 else pd.NaT, axis=1
         )
@@ -134,7 +164,7 @@ if not df.empty:
         def get_status(var, app):
             if app == 0: return "⚪ N/A"
             pct = abs(var) / app
-            if pct <= 0.05: return "🟢 On Target"
+            if pct <= 0.05: return " On Target"
             elif pct <= 0.15: return "🟡 Slight Variance"
             else: return "🔴 High Variance"
         df['Variance Status'] = df.apply(lambda r: get_status(r['CPD Variance'], r['Approved CPD']), axis=1)
@@ -145,8 +175,9 @@ if not df.empty:
         elif val < 0: return 'background-color: #f8d7da'
         return ''
 
-    display_cols = ['Site ID', 'Region', 'Cluster', 'Total QTY Supplied', 'Approved CPD', 
-                    'Estimated CPD', 'CPD Variance', 'Variance Status', 'Supply Date', 'Estimated Next Supply Date', 'Bobtail number']
+    display_cols = ['Site ID', 'Region', 'Cluster', 'Total QTY Supplied', 'Total QTY Before Supply',
+                    'Approved CPD', 'Estimated CPD', 'CPD Variance', 'Variance Status', 
+                    'Supply Date', 'Estimated Next Supply Date', 'Bobtail number']
     final_cols = [c for c in display_cols if c in df.columns]
     display_df = df[final_cols]
 
@@ -159,7 +190,7 @@ if not df.empty:
     st.dataframe(styled_df, use_container_width=True, hide_index=True)
 
     csv = display_df.to_csv(index=False).encode('utf-8')
-    st.download_button(label=" Download Processed Data", data=csv, file_name="processed_supply_data.csv", mime="text/csv")
+    st.download_button(label="📥 Download Processed Data", data=csv, file_name="processed_supply_data.csv", mime="text/csv")
 
 else:
     if input_method == "Upload Excel File":
