@@ -26,6 +26,9 @@ if input_method == "Upload Excel File":
         
         # Clean column names (remove accidental spaces)
         df.columns = df.columns.str.strip()
+        # Ensure Supply Date is a date object for sorting
+        if 'Supply Date' in df.columns:
+            df['Supply Date'] = pd.to_datetime(df['Supply Date'])
 
 elif input_method == "Manual Entry":
     st.subheader("Enter Supply Details")
@@ -56,12 +59,11 @@ elif input_method == "Manual Entry":
                     'Site ID': site_id, 'Region': region, 'Cluster': cluster,
                     'Qty before supply Tank 1': qty_before_t1, 'QTY supplied Tank 1': qty_supplied_t1,
                     'Qty before supply Tank 2': qty_before_t2, 'QTY supplied Tank 2': qty_supplied_t2,
-                    'Approved CPD': approved_cpd, 'Supply Date': supply_date, 'Bobtail number': bobtail
+                    'Approved CPD': approved_cpd, 'Supply Date': pd.to_datetime(supply_date), 'Bobtail number': bobtail
                 }
                 st.session_state.manual_data.append(new_record)
                 st.success("Record added! Add more below or switch to 'Upload Excel' to view results.")
 
-    # Show current manual entries
     if st.session_state.manual_data:
         st.write("**Current Manual Entries:**")
         temp_df = pd.DataFrame(st.session_state.manual_data)
@@ -69,7 +71,6 @@ elif input_method == "Manual Entry":
         if st.button("🗑️ Clear All Manual Entries"):
             st.session_state.manual_data = []
             st.rerun()
-        
         df = temp_df
 
 # --- 3. THE ACTION ENGINE (Processing the Data) ---
@@ -77,62 +78,87 @@ if not df.empty:
     st.divider()
     st.subheader("📈 Processed Data & Analysis")
     
-    # Ensure numeric columns are actually numbers (handles Excel text-formatted numbers)
+    # Ensure numeric columns are numbers
     numeric_cols = ['Qty before supply Tank 1', 'QTY supplied Tank 1', 'Qty before supply Tank 2', 
                     'QTY supplied Tank 2', 'Approved CPD']
     for col in numeric_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-    # ACTION A: Calculate Total QTY Supplied
+    # Calculate Totals
+    df['Total QTY Before Supply'] = df['Qty before supply Tank 1'] + df['Qty before supply Tank 2']
     df['Total QTY Supplied'] = df['QTY supplied Tank 1'] + df['QTY supplied Tank 2']
 
-    # ACTION B: Estimate CPD 
-    # >>> EDIT THIS FORMULA TO MATCH YOUR ACTUAL BUSINESS LOGIC <<<
-    # Example: Estimated CPD = Total QTY * 0.05 
-    df['Estimated CPD'] = df['Total QTY Supplied'] * 0.05 
+    # Sort data to ensure "Previous" calculations are correct (By Site ID, then Date)
+    if 'Supply Date' in df.columns:
+        df = df.sort_values(by=['Site ID', 'Supply Date'])
 
-    # ACTION C: Compare Approved vs Estimated & Calculate Variance
+    # --- CALCULATE ESTIMATED CPD ---
+    # Get the previous row's data for the same Site ID
+    df['Prev_Total_Supplied'] = df.groupby('Site ID')['Total QTY Supplied'].shift(1)
+    df['Prev_Total_Before'] = df.groupby('Site ID')['Total QTY Before Supply'].shift(1)
+    df['Prev_Supply_Date'] = df.groupby('Site ID')['Supply Date'].shift(1)
+
+    # Calculate Days between supplies
+    df['Days_Diff'] = (df['Supply Date'] - df['Prev_Supply_Date']).dt.days
+
+    # Calculate Total Consumed: (Previous Stock + Previous Supply) - Current Stock
+    # Note: If there is no previous data (first row), this will be NaN
+    df['Total_Consumed'] = (df['Prev_Total_Before'] + df['Prev_Total_Supplied']) - df['Total QTY Before Supply']
+
+    # Estimated CPD = Total Consumed / Days Difference
+    # We use .where to avoid division by zero or negative days
+    df['Estimated CPD'] = df['Total_Consumed'] / df['Days_Diff']
+    df['Estimated CPD'] = df['Estimated CPD'].where(df['Days_Diff'] > 0, 0) # If days diff is 0 or negative, CPD is 0
+
+    # --- CALCULATE NEXT SUPPLY DATE ---
+    # Days fuel will last = Total QTY Supplied / Estimated CPD
+    df['Days_Fuel_Last'] = df['Total QTY Supplied'] / df['Estimated CPD']
+    df['Days_Fuel_Last'] = df['Days_Fuel_Last'].where(df['Estimated CPD'] > 0, 0) # Avoid division by zero
+
+    # Next Supply Date = Current Supply Date + Days Fuel Last
+    df['Estimated Next Supply Date'] = df.apply(
+        lambda row: row['Supply Date'] + timedelta(days=row['Days_Fuel_Last']) if row['Days_Fuel_Last'] > 0 else pd.NaT, 
+        axis=1
+    )
+
+    # --- COMPARE APPROVED vs ESTIMATED ---
     df['CPD Variance'] = df['Approved CPD'] - df['Estimated CPD']
     
-    # Create a visual status column for easy reading
     def get_variance_status(variance, approved):
         if approved == 0: return "⚪ N/A"
         pct_diff = abs(variance) / approved
-        if pct_diff <= 0.05: return "🟢 On Target (<=5%)"
-        elif pct_diff <= 0.15: return "🟡 Slight Variance"
+        if pct_diff <= 0.05: return " On Target (<=5%)"
+        elif pct_diff <= 0.15: return " Slight Variance"
         else: return "🔴 High Variance"
 
     df['Variance Status'] = df.apply(lambda row: get_variance_status(row['CPD Variance'], row['Approved CPD']), axis=1)
 
-    # ACTION D: Estimate Data for Next Supply
-    # >>> EDIT THIS FORMULA TO MATCH YOUR ACTUAL BUSINESS LOGIC <<<
-    # Example: Next supply is exactly 7 days after the current supply date
-    if 'Supply Date' in df.columns:
-        df['Supply Date'] = pd.to_datetime(df['Supply Date'])
-        df['Estimated Next Supply Date'] = df['Supply Date'] + timedelta(days=7)
-
     # --- 4. DISPLAY WITH HIGHLIGHTING ---
-    # Highlight the Variance column (Green if positive/under budget, Red if negative/over budget)
     def highlight_variance(val):
-        if val > 0:
-            return 'background-color: #d4edda' # Light Green
-        elif val < 0:
-            return 'background-color: #f8d7da' # Light Red
-        else:
-            return ''
+        if val > 0: return 'background-color: #d4edda' # Light Green (Under budget/Good)
+        elif val < 0: return 'background-color: #f8d7da' # Light Red (Over budget/Bad)
+        else: return ''
 
-    # Apply styling
-    styled_df = df.style.map(highlight_variance, subset=['CPD Variance'])
+    # Select columns to display (hiding intermediate calculation columns for cleanliness)
+    display_cols = ['Site ID', 'Region', 'Cluster', 'Total QTY Supplied', 'Approved CPD', 
+                    'Estimated CPD', 'CPD Variance', 'Variance Status', 'Supply Date', 'Estimated Next Supply Date', 'Bobtail number']
     
-    # Format dates for cleaner display
+    # Filter to only show columns that exist
+    final_cols = [c for c in display_cols if c in df.columns]
+    display_df = df[final_cols]
+
+    styled_df = display_df.style.map(highlight_variance, subset=['CPD Variance'])
+    
     if 'Estimated Next Supply Date' in styled_df.columns:
         styled_df = styled_df.format({'Estimated Next Supply Date': lambda x: x.strftime('%Y-%m-%d') if pd.notnull(x) else ''})
+    if 'Supply Date' in styled_df.columns:
+        styled_df = styled_df.format({'Supply Date': lambda x: x.strftime('%Y-%m-%d') if pd.notnull(x) else ''})
 
     st.dataframe(styled_df, use_container_width=True, hide_index=True)
 
-    # Download button for the processed data
-    csv = df.to_csv(index=False).encode('utf-8')
+    # Download button
+    csv = display_df.to_csv(index=False).encode('utf-8')
     st.download_button(
         label="📥 Download Processed Data as CSV",
         data=csv,
@@ -144,4 +170,4 @@ else:
     if input_method == "Upload Excel File":
         st.info("👆 Please upload an Excel or CSV file to begin.")
     else:
-        st.info("👆 Please add records using the form above to see the analysis.")
+        st.info(" Please add records using the form above to see the analysis.")
