@@ -13,7 +13,7 @@ if not st.session_state.logged_in:
     st.title("🔒 Access Portal")
     st.write("Please select your access level to continue.")
     
-    tab1, tab2 = st.tabs([" Team Access (Data Entry & View)", " Admin Login"])
+    tab1, tab2 = st.tabs(["👥 Team Access (Data Entry & View)", "🔑 Admin Login"])
 
     with tab1:
         st.subheader("Team Members")
@@ -38,11 +38,11 @@ if not st.session_state.logged_in:
 
 # --- 2. PAGE CONFIG & SIDEBAR ---
 st.set_page_config(page_title="Supply & CPD Tracker", layout="wide")
-st.title("📊 Supply & CPD Tracker App")
+st.title(" Supply & CPD Tracker App")
 
 # Show who is logged in and Logout button
 if st.session_state.role == 'Admin':
-    st.sidebar.success("🔑 Logged in as Admin")
+    st.sidebar.success(" Logged in as Admin")
 else:
     st.sidebar.info("👥 Logged in as Team Member")
 
@@ -152,7 +152,7 @@ elif input_method == "Manual Entry":
 # --- 5. ADMIN CONTROLS (EXCLUSIVE TO ADMIN) ---
 if st.session_state.role == 'Admin':
     st.sidebar.markdown("---")
-    st.sidebar.subheader(" Admin Controls")
+    st.sidebar.subheader("🔑 Admin Controls")
     st.sidebar.write("Exclusive controls for the administrator.")
     if st.sidebar.button("🗑️ Clear All Manual Entries"): 
         st.session_state.manual_data = []
@@ -210,7 +210,7 @@ if not df.empty:
             days_diff = (next_date - today).days
             if days_diff < 0: return "🚨 OVERDUE"
             elif days_diff == 0: return "🔴 CRITICAL: Supply Today"
-            elif days_diff <= 2: return f"🟡 WARNING: Supply in {days_diff} days"
+            elif days_diff <= 2: return f" WARNING: Supply in {days_diff} days"
             else: return ""
         df['Supply Alert'] = df['Estimated Next Supply Date'].apply(get_supply_alert)
 
@@ -246,7 +246,7 @@ if not df.empty:
         st.warning("No data found for the selected filters.")
     else:
         # --- 8. SUMMARY DASHBOARD ---
-        st.subheader("📊 Summary Dashboard")
+        st.subheader(" Summary Dashboard")
         
         total_sites = filtered_df['Site ID'].nunique()
         total_supplied = filtered_df['Total QTY Supplied'].sum()
@@ -277,12 +277,11 @@ if not df.empty:
             status_counts = filtered_df['Variance Status'].value_counts().reset_index()
             status_counts.columns = ['Status', 'Count']
             
-            # --- COLORFUL VARIANCE GRAPH (PLOTLY) ---
             color_map = {
-                '🟢 On Target': '#28a745',       # Green
-                '🟡 Slight Variance': '#ffc107', # Yellow
-                '🔴 High Variance': '#dc3545',   # Red
-                '⚪ N/A': '#6c757d'              # Grey
+                '🟢 On Target': '#28a745',       
+                '🟡 Slight Variance': '#ffc107', 
+                '🔴 High Variance': '#dc3545',   
+                '⚪ N/A': '#6c757d'              
             }
             
             fig = px.bar(status_counts, x='Status', y='Count', color='Status',
@@ -294,8 +293,8 @@ if not df.empty:
 
         st.markdown("---")
 
-        # --- 10. HISTORICAL TREND CHART ---
-        st.subheader("📈 Historical CPD Trend")
+        # --- 10. HISTORICAL TREND CHART (NOW 2 COLORS) ---
+        st.subheader(" Historical CPD Trend")
         
         trend_sites = filtered_df['Site ID'].unique()
         if len(trend_sites) > 0:
@@ -305,8 +304,15 @@ if not df.empty:
             site_trend_data = filtered_df[filtered_df['Site ID'] == trend_site_select].sort_values('Supply Date')
             
             if not site_trend_data.empty and site_trend_data['Estimated CPD'].sum() > 0:
-                chart_data = site_trend_data.set_index('Supply Date')[['Estimated CPD', 'Approved CPD']]
-                st.line_chart(chart_data)
+                # Prepare data for Plotly to show 2 distinct colors
+                chart_data = site_trend_data[['Supply Date', 'Estimated CPD', 'Approved CPD']].copy()
+                chart_data_melted = chart_data.melt(id_vars='Supply Date', value_vars=['Estimated CPD', 'Approved CPD'], var_name='CPD Type', value_name='Value')
+                
+                fig_line = px.line(chart_data_melted, x='Supply Date', y='Value', color='CPD Type', markers=True,
+                                   color_discrete_map={'Estimated CPD': '#007bff', 'Approved CPD': '#dc3545'},
+                                   title=f'CPD Trend for {trend_site_select}')
+                fig_line.update_layout(yaxis_title='CPD (Liters/Day)', xaxis_title='Supply Date')
+                st.plotly_chart(fig_line, use_container_width=True)
             else:
                 st.info("No CPD data available for this site in the selected range.")
 
@@ -367,4 +373,4 @@ if not df.empty:
         )
 
 else:
-    st.info("👆 No data available. Please upload an Excel file or add manual entries from the sidebar.")
+    st.info("👆 No data available. Please upload your Master Excel file or add manual entries from the sidebar.")
