@@ -2,46 +2,71 @@ import streamlit as st
 import pandas as pd
 from datetime import timedelta, date
 import io
+import plotly.express as px
 
 # --- 1. SECURITY & LOGIN ---
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
+    st.session_state.role = None
 
 if not st.session_state.logged_in:
-    st.title("🔒 Secure Login")
-    st.write("Please enter the password to access the Supply & CPD Tracker.")
+    st.title("🔒 Access Portal")
+    st.write("Please select your access level to continue.")
     
-    # YOU CAN CHANGE THE PASSWORD HERE
-    password = st.text_input("Enter Password", type="password")
-    
-    if st.button("Login"):
-        if password == "admin123": 
+    tab1, tab2 = st.tabs([" Team Access (Data Entry & View)", " Admin Login"])
+
+    with tab1:
+        st.subheader("Team Members")
+        st.write("Upload data, enter manual records, view the dashboard, and download reports. (No password required)")
+        if st.button("Enter as Team"):
             st.session_state.logged_in = True
+            st.session_state.role = 'Team'
             st.rerun()
-        else:
-            st.error("Incorrect password. Please try again.")
+
+    with tab2:
+        st.subheader("Administrator")
+        st.write("Full access including data entry, reports, and exclusive administrative controls.")
+        password = st.text_input("Enter Admin Password", type="password")
+        if st.button("Login as Admin"):
+            if password == "admin123": 
+                st.session_state.logged_in = True
+                st.session_state.role = 'Admin'
+                st.rerun()
+            else:
+                st.error("Incorrect password. Please try again.")
     st.stop()
 
-# --- 2. PAGE CONFIG ---
+# --- 2. PAGE CONFIG & SIDEBAR ---
 st.set_page_config(page_title="Supply & CPD Tracker", layout="wide")
-st.title(" Supply & CPD Tracker App")
+st.title("📊 Supply & CPD Tracker App")
+
+# Show who is logged in and Logout button
+if st.session_state.role == 'Admin':
+    st.sidebar.success("🔑 Logged in as Admin")
+else:
+    st.sidebar.info("👥 Logged in as Team Member")
+
+if st.sidebar.button("Logout"):
+    st.session_state.logged_in = False
+    st.session_state.role = None
+    st.rerun()
 
 # --- 3. SESSION STATE ---
 if 'manual_data' not in st.session_state:
     st.session_state.manual_data = []
 
-# --- 4. INPUT METHOD ---
-input_method = st.radio(
+df = pd.DataFrame()
+
+# --- 4. DATA INGESTION (BOTH ADMIN AND TEAM) ---
+st.sidebar.header("📥 Data Input")
+input_method = st.sidebar.radio(
     "How would you like to input data?", 
     ("Upload Excel File", "Manual Entry"), 
     horizontal=True
 )
 
-df = pd.DataFrame()
-
-# --- 5. DATA INGESTION ---
 if input_method == "Upload Excel File":
-    uploaded_file = st.file_uploader("Upload your Excel or CSV file", type=["xlsx", "csv"])
+    uploaded_file = st.sidebar.file_uploader("Upload your Excel or CSV file", type=["xlsx", "csv"])
     
     if uploaded_file is not None:
         if uploaded_file.name.endswith('.csv'):
@@ -95,8 +120,8 @@ if input_method == "Upload Excel File":
         if 'Supply Date' in df.columns: df['Supply Date'] = pd.to_datetime(df['Supply Date'], errors='coerce')
 
 elif input_method == "Manual Entry":
-    st.subheader("Enter Supply Details")
-    with st.form("manual_entry_form"):
+    st.sidebar.subheader("Enter Supply Details")
+    with st.sidebar.form("manual_entry_form"):
         col1, col2 = st.columns(2)
         with col1:
             site_id = st.text_input("Site ID"); region = st.text_input("Region"); cluster = st.text_input("Cluster")
@@ -119,11 +144,20 @@ elif input_method == "Manual Entry":
                 st.session_state.manual_data.append(new_record); st.success("Record added!")
 
     if st.session_state.manual_data:
-        st.write("**Current Manual Entries:**")
+        st.sidebar.write("**Current Manual Entries:**")
         temp_df = pd.DataFrame(st.session_state.manual_data)
-        st.dataframe(temp_df, use_container_width=True)
-        if st.button("🗑️ Clear All Manual Entries"): st.session_state.manual_data = []; st.rerun()
+        st.sidebar.dataframe(temp_df, use_container_width=True)
         df = temp_df
+
+# --- 5. ADMIN CONTROLS (EXCLUSIVE TO ADMIN) ---
+if st.session_state.role == 'Admin':
+    st.sidebar.markdown("---")
+    st.sidebar.subheader(" Admin Controls")
+    st.sidebar.write("Exclusive controls for the administrator.")
+    if st.sidebar.button("🗑️ Clear All Manual Entries"): 
+        st.session_state.manual_data = []
+        st.success("Manual entries cleared!")
+        st.rerun()
 
 # --- 6. THE ACTION ENGINE ---
 if not df.empty:
@@ -176,12 +210,12 @@ if not df.empty:
             days_diff = (next_date - today).days
             if days_diff < 0: return "🚨 OVERDUE"
             elif days_diff == 0: return "🔴 CRITICAL: Supply Today"
-            elif days_diff <= 2: return f" WARNING: Supply in {days_diff} days"
+            elif days_diff <= 2: return f"🟡 WARNING: Supply in {days_diff} days"
             else: return ""
         df['Supply Alert'] = df['Estimated Next Supply Date'].apply(get_supply_alert)
 
     # --- 7. SIDEBAR FILTERS ---
-    st.sidebar.header(" Filters")
+    st.sidebar.header("🔍 Filters")
     
     min_date = df['Supply Date'].min().date()
     max_date = df['Supply Date'].max().date()
@@ -198,7 +232,6 @@ if not df.empty:
     sites = ['All'] + list(df['Site ID'].dropna().unique()) if 'Site ID' in df.columns else ['All']
     selected_site = st.sidebar.selectbox("Site ID", sites)
 
-    # Apply Filters
     mask = (
         (df['Supply Date'].dt.date >= start_date) & 
         (df['Supply Date'].dt.date <= end_date)
@@ -231,25 +264,41 @@ if not df.empty:
 
         st.markdown("---")
 
-        # Bar Charts
+        # --- 9. CHARTS ---
         chart_col1, chart_col2 = st.columns(2)
+        
         with chart_col1:
             st.subheader("Total QTY Supplied by Region")
             if 'Region' in filtered_df.columns:
                 st.bar_chart(filtered_df.groupby('Region')['Total QTY Supplied'].sum())
+
         with chart_col2:
             st.subheader("Variance Status Distribution")
-            st.bar_chart(filtered_df['Variance Status'].value_counts())
+            status_counts = filtered_df['Variance Status'].value_counts().reset_index()
+            status_counts.columns = ['Status', 'Count']
+            
+            # --- COLORFUL VARIANCE GRAPH (PLOTLY) ---
+            color_map = {
+                '🟢 On Target': '#28a745',       # Green
+                '🟡 Slight Variance': '#ffc107', # Yellow
+                '🔴 High Variance': '#dc3545',   # Red
+                '⚪ N/A': '#6c757d'              # Grey
+            }
+            
+            fig = px.bar(status_counts, x='Status', y='Count', color='Status',
+                         color_discrete_map=color_map, text='Count',
+                         title='Variance Status Distribution')
+            fig.update_layout(showlegend=False, yaxis_title='Number of Records', xaxis_title='')
+            fig.update_traces(textposition='outside')
+            st.plotly_chart(fig, use_container_width=True)
 
         st.markdown("---")
 
-        # --- 9. HISTORICAL TREND CHART ---
+        # --- 10. HISTORICAL TREND CHART ---
         st.subheader("📈 Historical CPD Trend")
-        st.write("Select a site from the sidebar to see its Estimated CPD over time.")
         
         trend_sites = filtered_df['Site ID'].unique()
         if len(trend_sites) > 0:
-            # If a specific site is selected in sidebar, use it. Otherwise, use the first one.
             default_trend_site = selected_site if selected_site != 'All' else trend_sites[0]
             trend_site_select = st.selectbox("View Trend for Site:", trend_sites, index=list(trend_sites).index(default_trend_site) if default_trend_site in trend_sites else 0)
             
@@ -263,7 +312,7 @@ if not df.empty:
 
         st.markdown("---")
 
-        # --- 10. DETAILED TABLE & EXCEL EXPORT ---
+        # --- 11. DETAILED TABLE & EXCEL EXPORT ---
         st.subheader("📋 Detailed Data & Analysis")
         
         def highlight_var(val):
@@ -306,7 +355,6 @@ if not df.empty:
         styled_df = styled_df.format(format_dict)
         st.dataframe(styled_df, use_container_width=True, hide_index=True)
 
-        # Excel Export
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             display_df.to_excel(writer, index=False, sheet_name='Supply Data')
@@ -319,5 +367,4 @@ if not df.empty:
         )
 
 else:
-    if input_method == "Upload Excel File": st.info("👆 Please upload an Excel or CSV file to begin.")
-    else: st.info("👆 Please add records using the form above.")
+    st.info("👆 No data available. Please upload an Excel file or add manual entries from the sidebar.")
