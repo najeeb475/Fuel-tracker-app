@@ -36,18 +36,26 @@ if input_method == "Upload Excel File":
         df.columns = [str(c).strip() for c in df.columns]
         df = df.loc[:, ~df.columns.duplicated()]
 
-        # 2. Bulletproof column finder
-        def find_col(keywords):
+        # --- DEBUG TOOL ---
+        with st.expander("🔍 Debug: Click here to see exact column names in your file"):
+            st.write("The app sees these columns in your Excel file:")
+            st.code(list(df.columns))
+
+        # 2. Smart column finder (Now ignores 'before' when looking for 'supplied')
+        def find_col(keywords, exclude=None):
+            if exclude is None:
+                exclude = []
             for col in df.columns:
                 c = str(col).lower()
-                if all(k in c for k in keywords):
+                if all(k in c for k in keywords) and not any(k in c for k in exclude):
                     return col
             return None
 
+        # Search for columns
         c_t1_b = find_col(['before', 'tank', '1'])
-        c_t1_s = find_col(['suppl', 'tank', '1']) 
+        c_t1_s = find_col(['suppl', 'tank', '1'], exclude=['before']) 
         c_t2_b = find_col(['before', 'tank', '2'])
-        c_t2_s = find_col(['suppl', 'tank', '2'])
+        c_t2_s = find_col(['suppl', 'tank', '2'], exclude=['before'])
         c_cpd  = find_col(['approved', 'cpd'])
         c_date = find_col(['supply', 'date'])
         c_site = find_col(['site']) 
@@ -104,22 +112,12 @@ elif input_method == "Manual Entry":
             site_id = st.text_input("Site ID")
             region = st.text_input("Region")
             cluster = st.text_input("Cluster")
-            qty_before_t1 = st.number_input(
-                "Qty before supply Tank 1", min_value=0.0, format="%.2f"
-            )
-            qty_supplied_t1 = st.number_input(
-                "QTY supplied Tank 1", min_value=0.0, format="%.2f"
-            )
-            qty_before_t2 = st.number_input(
-                "Qty before supply Tank 2", min_value=0.0, format="%.2f"
-            )
-            qty_supplied_t2 = st.number_input(
-                "QTY supplied Tank 2", min_value=0.0, format="%.2f"
-            )
+            qty_before_t1 = st.number_input("Qty before supply Tank 1", min_value=0.0, format="%.2f")
+            qty_supplied_t1 = st.number_input("QTY supplied Tank 1", min_value=0.0, format="%.2f")
+            qty_before_t2 = st.number_input("Qty before supply Tank 2", min_value=0.0, format="%.2f")
+            qty_supplied_t2 = st.number_input("QTY supplied Tank 2", min_value=0.0, format="%.2f")
         with col2:
-            approved_cpd = st.number_input(
-                "Approved CPD", min_value=0.0, format="%.2f"
-            )
+            approved_cpd = st.number_input("Approved CPD", min_value=0.0, format="%.2f")
             supply_date = st.date_input("Supply Date")
             bobtail = st.text_input("Bobtail number")
             
@@ -218,12 +216,12 @@ if not df.empty:
         
         def get_status(var, app):
             if app == 0: 
-                return "⚪ N/A"
+                return " N/A"
             pct = abs(var) / app
             if pct <= 0.05: 
                 return "🟢 On Target"
             elif pct <= 0.15: 
-                return " Slight Variance"
+                return "🟡 Slight Variance"
             else: 
                 return "🔴 High Variance"
                 
@@ -254,14 +252,20 @@ if not df.empty:
         highlight_var, subset=['CPD Variance']
     )
     
+    # Robust date formatter
+    def format_date(x):
+        if pd.isnull(x): return ''
+        if hasattr(x, 'strftime'): return x.strftime('%Y-%m-%d')
+        return str(x).split(' ')[0]
+
     if 'Estimated Next Supply Date' in styled_df.columns:
         styled_df = styled_df.format({
-            'Estimated Next Supply Date': lambda x: x.strftime('%Y-%m-%d') if pd.notnull(x) else ''
+            'Estimated Next Supply Date': format_date
         })
         
     if 'Supply Date' in styled_df.columns:
         styled_df = styled_df.format({
-            'Supply Date': lambda x: x.strftime('%Y-%m-%d') if pd.notnull(x) else ''
+            'Supply Date': format_date
         })
 
     st.dataframe(styled_df, use_container_width=True, hide_index=True)
