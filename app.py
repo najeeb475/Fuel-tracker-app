@@ -1,10 +1,10 @@
 import streamlit as st
 import pandas as pd
-from datetime import timedelta
+from datetime import timedelta, date
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Supply & CPD Tracker", layout="wide")
-st.title(" Supply & CPD Tracker App")
+st.title("📊 Supply & CPD Tracker App")
 
 # --- SESSION STATE ---
 if 'manual_data' not in st.session_state:
@@ -21,10 +21,7 @@ df = pd.DataFrame()
 
 # --- 2. DATA INGESTION ---
 if input_method == "Upload Excel File":
-    uploaded_file = st.file_uploader(
-        "Upload your Excel or CSV file", 
-        type=["xlsx", "csv"]
-    )
+    uploaded_file = st.file_uploader("Upload your Excel or CSV file", type=["xlsx", "csv"])
     
     if uploaded_file is not None:
         if uploaded_file.name.endswith('.csv'):
@@ -32,14 +29,11 @@ if input_method == "Upload Excel File":
         else:
             df = pd.read_excel(uploaded_file)
         
-        # 1. Clean column names
         df.columns = [str(c).strip() for c in df.columns]
         df = df.loc[:, ~df.columns.duplicated()]
 
-        # 2. Smart column finder
         def find_col(keywords, exclude=None):
-            if exclude is None:
-                exclude = []
+            if exclude is None: exclude = []
             for col in df.columns:
                 c = str(col).lower()
                 if all(k in c for k in keywords) and not any(k in c for k in exclude):
@@ -72,92 +66,64 @@ if input_method == "Upload Excel File":
         df.rename(columns=rename_map, inplace=True)
         df = df.loc[:, ~df.columns.duplicated()]
 
-        # 3. Handle blanks
-        tank_cols = [
-            'Qty before supply Tank 1', 'QTY supplied Tank 1', 
-            'Qty before supply Tank 2', 'QTY supplied Tank 2'
-        ]
+        tank_cols = ['Qty before supply Tank 1', 'QTY supplied Tank 1', 'Qty before supply Tank 2', 'QTY supplied Tank 2']
         for col in tank_cols:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
-            else:
-                df[col] = 0.0
+            if col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+            else: df[col] = 0.0
 
-        if 'Approved CPD' in df.columns:
-            df['Approved CPD'] = pd.to_numeric(df['Approved CPD'], errors='coerce').fillna(0.0)
-
-        if 'Supply Date' in df.columns:
-            df['Supply Date'] = pd.to_datetime(df['Supply Date'], errors='coerce')
+        if 'Approved CPD' in df.columns: df['Approved CPD'] = pd.to_numeric(df['Approved CPD'], errors='coerce').fillna(0.0)
+        if 'Supply Date' in df.columns: df['Supply Date'] = pd.to_datetime(df['Supply Date'], errors='coerce')
 
 elif input_method == "Manual Entry":
     st.subheader("Enter Supply Details")
     with st.form("manual_entry_form"):
         col1, col2 = st.columns(2)
         with col1:
-            site_id = st.text_input("Site ID")
-            region = st.text_input("Region")
-            cluster = st.text_input("Cluster")
+            site_id = st.text_input("Site ID"); region = st.text_input("Region"); cluster = st.text_input("Cluster")
             qty_before_t1 = st.number_input("Qty before supply Tank 1", min_value=0.0, format="%.2f")
             qty_supplied_t1 = st.number_input("QTY supplied Tank 1", min_value=0.0, format="%.2f")
             qty_before_t2 = st.number_input("Qty before supply Tank 2", min_value=0.0, format="%.2f")
             qty_supplied_t2 = st.number_input("QTY supplied Tank 2", min_value=0.0, format="%.2f")
         with col2:
             approved_cpd = st.number_input("Approved CPD", min_value=0.0, format="%.2f")
-            supply_date = st.date_input("Supply Date")
-            bobtail = st.text_input("Bobtail number")
+            supply_date = st.date_input("Supply Date"); bobtail = st.text_input("Bobtail number")
             
         submitted = st.form_submit_button("➕ Add Record to List")
         if submitted:
-            if not site_id:
-                st.error("Please enter at least a Site ID.")
+            if not site_id: st.error("Please enter at least a Site ID.")
             else:
-                new_record = {
-                    'Site ID': site_id, 'Region': region, 'Cluster': cluster,
+                new_record = {'Site ID': site_id, 'Region': region, 'Cluster': cluster,
                     'Qty before supply Tank 1': qty_before_t1, 'QTY supplied Tank 1': qty_supplied_t1,
                     'Qty before supply Tank 2': qty_before_t2, 'QTY supplied Tank 2': qty_supplied_t2,
-                    'Approved CPD': approved_cpd, 'Supply Date': pd.to_datetime(supply_date), 'Bobtail number': bobtail
-                }
-                st.session_state.manual_data.append(new_record)
-                st.success("Record added!")
+                    'Approved CPD': approved_cpd, 'Supply Date': pd.to_datetime(supply_date), 'Bobtail number': bobtail}
+                st.session_state.manual_data.append(new_record); st.success("Record added!")
 
     if st.session_state.manual_data:
         st.write("**Current Manual Entries:**")
         temp_df = pd.DataFrame(st.session_state.manual_data)
         st.dataframe(temp_df, use_container_width=True)
-        if st.button("🗑️ Clear All Manual Entries"):
-            st.session_state.manual_data = []
-            st.rerun()
+        if st.button("️ Clear All Manual Entries"): st.session_state.manual_data = []; st.rerun()
         df = temp_df
 
 # --- 3. THE ACTION ENGINE ---
 if not df.empty:
     st.divider()
-    st.subheader("📈 Processed Data & Analysis")
     
     if 'Supply Date' in df.columns and 'Site ID' in df.columns:
-        # Sort oldest to newest
         df = df.sort_values(by=['Site ID', 'Supply Date'])
-
         df['Total QTY Before Supply'] = df['Qty before supply Tank 1'] + df['Qty before supply Tank 2']
         df['Total QTY Supplied'] = df['QTY supplied Tank 1'] + df['QTY supplied Tank 2']
 
-        # Look at PREVIOUS row (shift 1)
         df['Prev_Total_Before'] = df.groupby('Site ID')['Total QTY Before Supply'].shift(1)
         df['Prev_Total_Supplied'] = df.groupby('Site ID')['Total QTY Supplied'].shift(1)
         df['Prev_Supply_Date'] = df.groupby('Site ID')['Supply Date'].shift(1)
-
-        # Days since last supply
         df['Days_Diff'] = (df['Supply Date'] - df['Prev_Supply_Date']).dt.days
         
-        # Formula 1: Estimated CPD (Based on previous data)
         df['Total_Consumed'] = (df['Prev_Total_Before'] + df['Prev_Total_Supplied']) - df['Total QTY Before Supply']
-        
         df['Estimated CPD'] = df['Total_Consumed'] / df['Days_Diff']
         df['Estimated CPD'] = df['Estimated CPD'].where(df['Days_Diff'] > 0, 0) 
 
-        # Formula 2: Next Supply Date (Based on current data)
         df['Total_QTY_After_Supply'] = df['Total QTY Before Supply'] + df['Total QTY Supplied']
-        
         df['Days_Fuel_Last'] = df['Total_QTY_After_Supply'] / df['Estimated CPD']
         df['Days_Fuel_Last'] = df['Days_Fuel_Last'].where(df['Estimated CPD'] > 0, 0) 
         
@@ -165,82 +131,122 @@ if not df.empty:
             if row['Days_Fuel_Last'] > 0 and not pd.isnull(row['Supply Date']):
                 next_date = row['Supply Date'] + timedelta(days=row['Days_Fuel_Last'])
                 return next_date.date() if hasattr(next_date, 'date') else next_date
-            else:
-                return None
-
+            else: return None
         df['Estimated Next Supply Date'] = df.apply(calc_next_date, axis=1)
 
-        # --- VARIANCE CALCULATION (Updated to ignore 0 Estimated CPD) ---
         def calc_variance(row):
-            if row['Estimated CPD'] == 0 or pd.isnull(row['Estimated CPD']):
-                return 0 # Returns 0 so it doesn't get highlighted
+            if row['Estimated CPD'] == 0 or pd.isnull(row['Estimated CPD']): return 0
             return row['Approved CPD'] - row['Estimated CPD']
-
         df['CPD Variance'] = df.apply(calc_variance, axis=1)
         
-        # --- VARIANCE STATUS (Updated to show N/A if Estimated CPD is 0) ---
         def get_status(row):
-            if row['Estimated CPD'] == 0 or pd.isnull(row['Estimated CPD']):
-                return "⚪ N/A"
-            app = row['Approved CPD']
-            var = row['CPD Variance']
+            if row['Estimated CPD'] == 0 or pd.isnull(row['Estimated CPD']): return "⚪ N/A"
+            app = row['Approved CPD']; var = row['CPD Variance']
             if app == 0: return "⚪ N/A"
             pct = abs(var) / app
-            if pct <= 0.05: return " On Target"
+            if pct <= 0.05: return "🟢 On Target"
             elif pct <= 0.15: return "🟡 Slight Variance"
             else: return "🔴 High Variance"
-                
         df['Variance Status'] = df.apply(get_status, axis=1)
 
-    # 4. Display
+        # --- NEW: SUPPLY ALERT SYSTEM ---
+        today = pd.Timestamp.today().date()
+        def get_supply_alert(next_date):
+            if pd.isnull(next_date): return ""
+            days_diff = (next_date - today).days
+            if days_diff < 0: return "🚨 OVERDUE"
+            elif days_diff == 0: return "🔴 CRITICAL: Supply Today"
+            elif days_diff <= 2: return f"🟡 WARNING: Supply in {days_diff} days"
+            else: return ""
+        df['Supply Alert'] = df['Estimated Next Supply Date'].apply(get_supply_alert)
+
+    # --- 4. SUMMARY DASHBOARD ---
+    st.subheader("📊 Summary Dashboard")
+    
+    # Calculate KPIs
+    total_sites = df['Site ID'].nunique() if 'Site ID' in df.columns else 0
+    total_supplied = df['Total QTY Supplied'].sum() if 'Total QTY Supplied' in df.columns else 0
+    high_variance_count = (df['Variance Status'] == '🔴 High Variance').sum() if 'Variance Status' in df.columns else 0
+    
+    urgent_supplies = 0
+    if 'Supply Alert' in df.columns:
+        urgent_supplies = df['Supply Alert'].apply(lambda x: 1 if 'CRITICAL' in x or 'WARNING' in x or 'OVERDUE' in x else 0).sum()
+
+    # Display KPI Metrics
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Total Sites Tracked", total_sites)
+    col2.metric("Total Fuel Supplied", f"{total_supplied:,.0f} L")
+    col3.metric("High Variance Sites", high_variance_count, delta="-" if high_variance_count > 0 else "0")
+    col4.metric("Urgent Supplies Needed", urgent_supplies, delta="Action Required" if urgent_supplies > 0 else "All Good")
+
+    st.markdown("---")
+
+    # Charts
+    chart_col1, chart_col2 = st.columns(2)
+    
+    with chart_col1:
+        st.subheader("Total QTY Supplied by Region")
+        if 'Region' in df.columns and 'Total QTY Supplied' in df.columns:
+            region_data = df.groupby('Region')['Total QTY Supplied'].sum()
+            st.bar_chart(region_data)
+        else:
+            st.info("Region data not available for chart.")
+
+    with chart_col2:
+        st.subheader("Variance Status Distribution")
+        if 'Variance Status' in df.columns:
+            status_counts = df['Variance Status'].value_counts()
+            st.bar_chart(status_counts)
+        else:
+            st.info("Variance data not available for chart.")
+
+    st.markdown("---")
+    st.subheader("📈 Detailed Data & Analysis")
+    
+    # Highlighting
     def highlight_var(val):
         if val > 0: return 'background-color: #d4edda'
         elif val < 0: return 'background-color: #f8d7da'
         return ''
 
+    def highlight_alert(val):
+        if 'CRITICAL' in str(val) or 'OVERDUE' in str(val): return 'background-color: #ffcccc; font-weight: bold;'
+        elif 'WARNING' in str(val): return 'background-color: #fff2cc; font-weight: bold;'
+        return ''
+
     display_cols = [
-        'Site ID', 'Region', 'Cluster', 'Total QTY Supplied', 
-        'Total QTY Before Supply', 'Approved CPD', 'Estimated CPD', 
-        'CPD Variance', 'Variance Status', 'Supply Date', 
-        'Estimated Next Supply Date', 'Bobtail number'
+        'Site ID', 'Region', 'Cluster', 'Total QTY Supplied', 'Total QTY Before Supply', 
+        'Approved CPD', 'Estimated CPD', 'CPD Variance', 'Variance Status', 
+        'Supply Date', 'Estimated Next Supply Date', 'Supply Alert', 'Bobtail number'
     ]
-    
     final_cols = [c for c in display_cols if c in df.columns]
     display_df = df[final_cols]
 
     styled_df = display_df.style.map(highlight_var, subset=['CPD Variance'])
+    if 'Supply Alert' in styled_df.columns:
+        styled_df = styled_df.map(highlight_alert, subset=['Supply Alert'])
     
-    # --- FORMATTERS TO REMOVE DECIMALS ---
     def format_num(x):
         if pd.isnull(x): return ''
-        return f"{x:.0f}" # Removes decimals
-
+        return f"{x:.0f}"
     def format_date(x):
         if pd.isnull(x): return ''
         if hasattr(x, 'strftime'): return x.strftime('%Y-%m-%d')
         return str(x)
 
-    # Apply formatting to numbers and dates
     format_dict = {}
     num_cols = ['Total QTY Supplied', 'Total QTY Before Supply', 'Approved CPD', 'Estimated CPD', 'CPD Variance']
     for col in num_cols:
-        if col in display_df.columns:
-            format_dict[col] = format_num
-            
-    if 'Estimated Next Supply Date' in display_df.columns:
-        format_dict['Estimated Next Supply Date'] = format_date
-    if 'Supply Date' in display_df.columns:
-        format_dict['Supply Date'] = format_date
+        if col in display_df.columns: format_dict[col] = format_num
+    if 'Estimated Next Supply Date' in display_df.columns: format_dict['Estimated Next Supply Date'] = format_date
+    if 'Supply Date' in display_df.columns: format_dict['Supply Date'] = format_date
 
     styled_df = styled_df.format(format_dict)
-
     st.dataframe(styled_df, use_container_width=True, hide_index=True)
 
     csv = display_df.to_csv(index=False).encode('utf-8')
     st.download_button(label="📥 Download Processed Data", data=csv, file_name="processed_supply_data.csv", mime="text/csv")
 
 else:
-    if input_method == "Upload Excel File":
-        st.info("👆 Please upload an Excel or CSV file to begin.")
-    else:
-        st.info("👆 Please add records using the form above.")
+    if input_method == "Upload Excel File": st.info("👆 Please upload an Excel or CSV file to begin.")
+    else: st.info(" Please add records using the form above.")
