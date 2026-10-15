@@ -1,16 +1,36 @@
 import streamlit as st
 import pandas as pd
 from datetime import timedelta, date
+import io
 
-# --- PAGE CONFIG ---
+# --- 1. SECURITY & LOGIN ---
+if 'logged_in' not in st.session_state:
+    st.session_state.logged_in = False
+
+if not st.session_state.logged_in:
+    st.title("🔒 Secure Login")
+    st.write("Please enter the password to access the Supply & CPD Tracker.")
+    
+    # YOU CAN CHANGE THE PASSWORD HERE
+    password = st.text_input("Enter Password", type="password")
+    
+    if st.button("Login"):
+        if password == "admin123": 
+            st.session_state.logged_in = True
+            st.rerun()
+        else:
+            st.error("Incorrect password. Please try again.")
+    st.stop()
+
+# --- 2. PAGE CONFIG ---
 st.set_page_config(page_title="Supply & CPD Tracker", layout="wide")
-st.title("📊 Supply & CPD Tracker App")
+st.title(" Supply & CPD Tracker App")
 
-# --- SESSION STATE ---
+# --- 3. SESSION STATE ---
 if 'manual_data' not in st.session_state:
     st.session_state.manual_data = []
 
-# --- 1. INPUT METHOD ---
+# --- 4. INPUT METHOD ---
 input_method = st.radio(
     "How would you like to input data?", 
     ("Upload Excel File", "Manual Entry"), 
@@ -19,7 +39,7 @@ input_method = st.radio(
 
 df = pd.DataFrame()
 
-# --- 2. DATA INGESTION ---
+# --- 5. DATA INGESTION ---
 if input_method == "Upload Excel File":
     uploaded_file = st.file_uploader("Upload your Excel or CSV file", type=["xlsx", "csv"])
     
@@ -105,12 +125,11 @@ elif input_method == "Manual Entry":
         if st.button("🗑️ Clear All Manual Entries"): st.session_state.manual_data = []; st.rerun()
         df = temp_df
 
-# --- 3. THE ACTION ENGINE ---
+# --- 6. THE ACTION ENGINE ---
 if not df.empty:
     st.divider()
     
     if 'Supply Date' in df.columns and 'Site ID' in df.columns:
-        # Sort oldest to newest
         df = df.sort_values(by=['Site ID', 'Supply Date'])
         
         df['Total QTY Before Supply'] = df['Qty before supply Tank 1'] + df['Qty before supply Tank 2']
@@ -151,46 +170,58 @@ if not df.empty:
             else: return "🔴 High Variance"
         df['Variance Status'] = df.apply(get_status, axis=1)
 
-        # --- SUPPLY ALERT SYSTEM ---
         today = pd.Timestamp.today().date()
         def get_supply_alert(next_date):
             if pd.isnull(next_date): return ""
             days_diff = (next_date - today).days
-            if days_diff < 0: return " OVERDUE"
+            if days_diff < 0: return "🚨 OVERDUE"
             elif days_diff == 0: return "🔴 CRITICAL: Supply Today"
-            elif days_diff <= 2: return f"🟡 WARNING: Supply in {days_diff} days"
+            elif days_diff <= 2: return f" WARNING: Supply in {days_diff} days"
             else: return ""
         df['Supply Alert'] = df['Estimated Next Supply Date'].apply(get_supply_alert)
 
-    # --- NEW: DATE RANGE FILTER ---
-    st.subheader(" Select Date Range")
+    # --- 7. SIDEBAR FILTERS ---
+    st.sidebar.header(" Filters")
+    
     min_date = df['Supply Date'].min().date()
     max_date = df['Supply Date'].max().date()
     
-    col_start, col_end = st.columns(2)
-    with col_start:
-        start_date = st.date_input("Start Date", value=min_date, min_value=min_date, max_value=max_date)
-    with col_end:
-        end_date = st.date_input("End Date", value=max_date, min_value=min_date, max_value=max_date)
+    start_date = st.sidebar.date_input("Start Date", value=min_date, min_value=min_date, max_value=max_date)
+    end_date = st.sidebar.date_input("End Date", value=max_date, min_value=min_date, max_value=max_date)
+    
+    regions = ['All'] + list(df['Region'].dropna().unique()) if 'Region' in df.columns else ['All']
+    selected_region = st.sidebar.selectbox("Region", regions)
+    
+    clusters = ['All'] + list(df['Cluster'].dropna().unique()) if 'Cluster' in df.columns else ['All']
+    selected_cluster = st.sidebar.selectbox("Cluster", clusters)
+    
+    sites = ['All'] + list(df['Site ID'].dropna().unique()) if 'Site ID' in df.columns else ['All']
+    selected_site = st.sidebar.selectbox("Site ID", sites)
 
-    # Filter the data for Dashboard and Table
-    # We keep the full 'df' for calculations, but use 'filtered_df' for display
-    filtered_df = df[
+    # Apply Filters
+    mask = (
         (df['Supply Date'].dt.date >= start_date) & 
         (df['Supply Date'].dt.date <= end_date)
-    ].copy()
+    )
+    if selected_region != 'All': mask &= (df['Region'] == selected_region)
+    if selected_cluster != 'All': mask &= (df['Cluster'] == selected_cluster)
+    if selected_site != 'All': mask &= (df['Site ID'] == selected_site)
+    
+    filtered_df = df[mask].copy()
 
     if filtered_df.empty:
-        st.warning("No data found for the selected date range.")
+        st.warning("No data found for the selected filters.")
     else:
-        # --- 4. SUMMARY DASHBOARD (Using Filtered Data) ---
+        # --- 8. SUMMARY DASHBOARD ---
         st.subheader("📊 Summary Dashboard")
         
         total_sites = filtered_df['Site ID'].nunique()
         total_supplied = filtered_df['Total QTY Supplied'].sum()
-        high_variance_count = (filtered_df['Variance Status'] == ' High Variance').sum()
+        high_variance_count = (filtered_df['Variance Status'] == '🔴 High Variance').sum()
         
-        urgent_supplies = filtered_df['Supply Alert'].apply(lambda x: 1 if 'CRITICAL' in str(x) or 'WARNING' in str(x) or 'OVERDUE' in str(x) else 0).sum()
+        urgent_supplies = filtered_df['Supply Alert'].apply(
+            lambda x: 1 if 'CRITICAL' in str(x) or 'WARNING' in str(x) or 'OVERDUE' in str(x) else 0
+        ).sum()
 
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Total Sites Tracked", total_sites)
@@ -200,25 +231,41 @@ if not df.empty:
 
         st.markdown("---")
 
-        # Charts
+        # Bar Charts
         chart_col1, chart_col2 = st.columns(2)
-        
         with chart_col1:
             st.subheader("Total QTY Supplied by Region")
             if 'Region' in filtered_df.columns:
-                region_data = filtered_df.groupby('Region')['Total QTY Supplied'].sum()
-                st.bar_chart(region_data)
-
+                st.bar_chart(filtered_df.groupby('Region')['Total QTY Supplied'].sum())
         with chart_col2:
             st.subheader("Variance Status Distribution")
-            if 'Variance Status' in filtered_df.columns:
-                status_counts = filtered_df['Variance Status'].value_counts()
-                st.bar_chart(status_counts)
+            st.bar_chart(filtered_df['Variance Status'].value_counts())
 
         st.markdown("---")
-        st.subheader("📈 Detailed Data & Analysis")
+
+        # --- 9. HISTORICAL TREND CHART ---
+        st.subheader("📈 Historical CPD Trend")
+        st.write("Select a site from the sidebar to see its Estimated CPD over time.")
         
-        # Highlighting
+        trend_sites = filtered_df['Site ID'].unique()
+        if len(trend_sites) > 0:
+            # If a specific site is selected in sidebar, use it. Otherwise, use the first one.
+            default_trend_site = selected_site if selected_site != 'All' else trend_sites[0]
+            trend_site_select = st.selectbox("View Trend for Site:", trend_sites, index=list(trend_sites).index(default_trend_site) if default_trend_site in trend_sites else 0)
+            
+            site_trend_data = filtered_df[filtered_df['Site ID'] == trend_site_select].sort_values('Supply Date')
+            
+            if not site_trend_data.empty and site_trend_data['Estimated CPD'].sum() > 0:
+                chart_data = site_trend_data.set_index('Supply Date')[['Estimated CPD', 'Approved CPD']]
+                st.line_chart(chart_data)
+            else:
+                st.info("No CPD data available for this site in the selected range.")
+
+        st.markdown("---")
+
+        # --- 10. DETAILED TABLE & EXCEL EXPORT ---
+        st.subheader("📋 Detailed Data & Analysis")
+        
         def highlight_var(val):
             if val > 0: return 'background-color: #d4edda'
             elif val < 0: return 'background-color: #f8d7da'
@@ -259,9 +306,18 @@ if not df.empty:
         styled_df = styled_df.format(format_dict)
         st.dataframe(styled_df, use_container_width=True, hide_index=True)
 
-        csv = display_df.to_csv(index=False).encode('utf-8')
-        st.download_button(label="📥 Download Filtered Data", data=csv, file_name=f"supply_data_{start_date}_to_{end_date}.csv", mime="text/csv")
+        # Excel Export
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            display_df.to_excel(writer, index=False, sheet_name='Supply Data')
+        
+        st.download_button(
+            label="📥 Download Filtered Data as Excel", 
+            data=output.getvalue(), 
+            file_name=f"supply_data_{start_date}_to_{end_date}.xlsx", 
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 
 else:
     if input_method == "Upload Excel File": st.info("👆 Please upload an Excel or CSV file to begin.")
-    else: st.info(" Please add records using the form above.")
+    else: st.info("👆 Please add records using the form above.")
