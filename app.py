@@ -4,7 +4,7 @@ from datetime import timedelta
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Supply & CPD Tracker", layout="wide")
-st.title("📊 Supply & CPD Tracker App")
+st.title(" Supply & CPD Tracker App")
 
 # --- SESSION STATE ---
 if 'manual_data' not in st.session_state:
@@ -170,17 +170,27 @@ if not df.empty:
 
         df['Estimated Next Supply Date'] = df.apply(calc_next_date, axis=1)
 
-        # Variance
-        df['CPD Variance'] = df['Approved CPD'] - df['Estimated CPD']
+        # --- VARIANCE CALCULATION (Updated to ignore 0 Estimated CPD) ---
+        def calc_variance(row):
+            if row['Estimated CPD'] == 0 or pd.isnull(row['Estimated CPD']):
+                return 0 # Returns 0 so it doesn't get highlighted
+            return row['Approved CPD'] - row['Estimated CPD']
+
+        df['CPD Variance'] = df.apply(calc_variance, axis=1)
         
-        def get_status(var, app):
+        # --- VARIANCE STATUS (Updated to show N/A if Estimated CPD is 0) ---
+        def get_status(row):
+            if row['Estimated CPD'] == 0 or pd.isnull(row['Estimated CPD']):
+                return "⚪ N/A"
+            app = row['Approved CPD']
+            var = row['CPD Variance']
             if app == 0: return "⚪ N/A"
             pct = abs(var) / app
             if pct <= 0.05: return " On Target"
             elif pct <= 0.15: return "🟡 Slight Variance"
             else: return "🔴 High Variance"
                 
-        df['Variance Status'] = df.apply(lambda r: get_status(r['CPD Variance'], r['Approved CPD']), axis=1)
+        df['Variance Status'] = df.apply(get_status, axis=1)
 
     # 4. Display
     def highlight_var(val):
