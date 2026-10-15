@@ -124,7 +124,7 @@ elif input_method == "Manual Entry":
         st.write("**Current Manual Entries:**")
         temp_df = pd.DataFrame(st.session_state.manual_data)
         st.dataframe(temp_df, use_container_width=True)
-        if st.button("️ Clear All Manual Entries"):
+        if st.button("🗑️ Clear All Manual Entries"):
             st.session_state.manual_data = []
             st.rerun()
         df = temp_df
@@ -141,7 +141,7 @@ if not df.empty:
         df['Total QTY Before Supply'] = df['Qty before supply Tank 1'] + df['Qty before supply Tank 2']
         df['Total QTY Supplied'] = df['QTY supplied Tank 1'] + df['QTY supplied Tank 2']
 
-        # --- NEW LOGIC: Look at PREVIOUS row (shift 1) ---
+        # Look at PREVIOUS row (shift 1)
         df['Prev_Total_Before'] = df.groupby('Site ID')['Total QTY Before Supply'].shift(1)
         df['Prev_Total_Supplied'] = df.groupby('Site ID')['Total QTY Supplied'].shift(1)
         df['Prev_Supply_Date'] = df.groupby('Site ID')['Supply Date'].shift(1)
@@ -150,7 +150,6 @@ if not df.empty:
         df['Days_Diff'] = (df['Supply Date'] - df['Prev_Supply_Date']).dt.days
         
         # Formula 1: Estimated CPD (Based on previous data)
-        # Consumption = (Previous Before + Previous Supplied) - Current Before
         df['Total_Consumed'] = (df['Prev_Total_Before'] + df['Prev_Total_Supplied']) - df['Total QTY Before Supply']
         
         df['Estimated CPD'] = df['Total_Consumed'] / df['Days_Diff']
@@ -164,7 +163,6 @@ if not df.empty:
         
         def calc_next_date(row):
             if row['Days_Fuel_Last'] > 0 and not pd.isnull(row['Supply Date']):
-                # Add days and return just the date part
                 next_date = row['Supply Date'] + timedelta(days=row['Days_Fuel_Last'])
                 return next_date.date() if hasattr(next_date, 'date') else next_date
             else:
@@ -176,10 +174,10 @@ if not df.empty:
         df['CPD Variance'] = df['Approved CPD'] - df['Estimated CPD']
         
         def get_status(var, app):
-            if app == 0: return " N/A"
+            if app == 0: return "⚪ N/A"
             pct = abs(var) / app
-            if pct <= 0.05: return "🟢 On Target"
-            elif pct <= 0.15: return " Slight Variance"
+            if pct <= 0.05: return " On Target"
+            elif pct <= 0.15: return "🟡 Slight Variance"
             else: return "🔴 High Variance"
                 
         df['Variance Status'] = df.apply(lambda r: get_status(r['CPD Variance'], r['Approved CPD']), axis=1)
@@ -202,16 +200,29 @@ if not df.empty:
 
     styled_df = display_df.style.map(highlight_var, subset=['CPD Variance'])
     
-    # Format dates cleanly
+    # --- FORMATTERS TO REMOVE DECIMALS ---
+    def format_num(x):
+        if pd.isnull(x): return ''
+        return f"{x:.0f}" # Removes decimals
+
     def format_date(x):
         if pd.isnull(x): return ''
         if hasattr(x, 'strftime'): return x.strftime('%Y-%m-%d')
         return str(x)
 
-    if 'Estimated Next Supply Date' in styled_df.columns:
-        styled_df = styled_df.format({'Estimated Next Supply Date': format_date})
-    if 'Supply Date' in styled_df.columns:
-        styled_df = styled_df.format({'Supply Date': format_date})
+    # Apply formatting to numbers and dates
+    format_dict = {}
+    num_cols = ['Total QTY Supplied', 'Total QTY Before Supply', 'Approved CPD', 'Estimated CPD', 'CPD Variance']
+    for col in num_cols:
+        if col in display_df.columns:
+            format_dict[col] = format_num
+            
+    if 'Estimated Next Supply Date' in display_df.columns:
+        format_dict['Estimated Next Supply Date'] = format_date
+    if 'Supply Date' in display_df.columns:
+        format_dict['Supply Date'] = format_date
+
+    styled_df = styled_df.format(format_dict)
 
     st.dataframe(styled_df, use_container_width=True, hide_index=True)
 
@@ -220,6 +231,6 @@ if not df.empty:
 
 else:
     if input_method == "Upload Excel File":
-        st.info(" Please upload an Excel or CSV file to begin.")
+        st.info("👆 Please upload an Excel or CSV file to begin.")
     else:
-        st.info(" Please add records using the form above.")
+        st.info("👆 Please add records using the form above.")
