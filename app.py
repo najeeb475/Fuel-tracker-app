@@ -5,7 +5,7 @@ import io
 import plotly.express as px
 import firebase_admin
 from firebase_admin import credentials, firestore
-import ast
+import json
 
 # --- 1. SECURITY & LOGIN ---
 if 'logged_in' not in st.session_state:
@@ -57,13 +57,11 @@ if st.sidebar.button("Logout"):
 @st.cache_resource
 def init_firebase():
     try:
-        config = st.secrets["firebase_config"]
+        # Read the raw JSON string from secrets and parse it into a dictionary
+        raw_json = st.secrets["firebase_credentials"]
+        config_dict = json.loads(raw_json)
         
-        # SAFETY NET: If Streamlit accidentally saved it as a string, convert it back to a dictionary
-        if isinstance(config, str):
-            config = ast.literal_eval(config)
-            
-        cred = credentials.Certificate(config)
+        cred = credentials.Certificate(config_dict)
         if not firebase_admin._apps:
             firebase_admin.initialize_app(cred, {'databaseURL': st.secrets["firebase_db_url"]})
         return firestore.client()
