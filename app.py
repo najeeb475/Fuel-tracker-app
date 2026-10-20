@@ -253,4 +253,147 @@ if not df.empty:
             if app == 0: 
                 return "⚪ N/A"
             pct = abs(var) / app
-            if pct <= 0.
+            if pct <= 0.05: 
+                return "🟢 On Target"
+            elif pct <= 0.15: 
+                return "🟡 Slight Variance"
+            else: 
+                return "🔴 High Variance"
+        df['Variance Status'] = df.apply(get_status, axis=1)
+
+        today = pd.Timestamp.today().date()
+        def get_supply_alert(next_date):
+            if pd.isnull(next_date): 
+                return ""
+            days_diff = (next_date - today).days
+            if days_diff < 0: 
+                return "🚨 OVERDUE"
+            elif days_diff == 0: 
+                return "🔴 CRITICAL: Supply Today"
+            elif days_diff <= 2: 
+                return f"🟡 WARNING: Supply in {days_diff} days"
+            else: 
+                return ""
+        df['Supply Alert'] = df['Estimated Next Supply Date'].apply(get_supply_alert)
+
+    # --- 8. SIDEBAR FILTERS ---
+    st.sidebar.header("🔍 Filters")
+    min_date = df['Supply Date'].min().date()
+    max_date = df['Supply Date'].max().date()
+    
+    start_date = st.sidebar.date_input("Start Date", value=min_date, min_value=min_date, max_value=max_date)
+    end_date = st.sidebar.date_input("End Date", value=max_date, min_value=min_date, max_value=max_date)
+    
+    regions = ['All'] + list(df['Region'].dropna().unique()) if 'Region' in df.columns else ['All']
+    selected_region = st.sidebar.selectbox("Region", regions)
+    
+    clusters = ['All'] + list(df['Cluster'].dropna().unique()) if 'Cluster' in df.columns else ['All']
+    selected_cluster = st.sidebar.selectbox("Cluster", clusters)
+    
+    sites = ['All'] + list(df['Site ID'].dropna().unique()) if 'Site ID' in df.columns else ['All']
+    selected_site = st.sidebar.selectbox("Site ID", sites)
+
+    mask = ((df['Supply Date'].dt.date >= start_date) & (df['Supply Date'].dt.date <= end_date))
+    if selected_region != 'All': mask &= (df['Region'] == selected_region)
+    if selected_cluster != 'All': mask &= (df['Cluster'] == selected_cluster)
+    if selected_site != 'All': mask &= (df['Site ID'] == selected_site)
+    
+    filtered_df = df[mask].copy()
+
+    if filtered_df.empty:
+        st.warning("No data found for the selected filters.")
+    else:
+        # --- 9. SUMMARY DASHBOARD ---
+        st.subheader("📊 Summary Dashboard")
+        
+        total_sites = filtered_df['Site ID'].nunique()
+        total_supplied = filtered_df['Total QTY Supplied'].sum()
+        high_variance_count = (filtered_df['Variance Status'] == '🔴 High Variance').sum()
+        sites_supplied_in_range = filtered_df['Site ID'].nunique()
+        urgent_supplies = filtered_df['Supply Alert'].apply(lambda x: 1 if 'CRITICAL' in str(x) or 'WARNING' in str(x) or 'OVERDUE' in str(x) else 0).sum()
+
+        col1, col2, col3, col4, col5 = st.columns(5)
+        col1.metric("Total Sites Tracked", total_sites)
+        col2.metric("Sites Supplied in Range", sites_supplied_in_range)
+        col3.metric("Total Fuel Supplied", f"{total_supplied:,.0f} L")
+        col4.metric("High Variance Sites", high_variance_count, delta="-" if high_variance_count > 0 else "0")
+        col5.metric("Urgent Supplies", urgent_supplies, delta="Action" if urgent_supplies > 0 else "Good")
+
+        st.markdown("---")
+
+        # --- 10. CHARTS ---
+        chart_col1, chart_col2 = st.columns(2)
+        with chart_col1:
+            st.subheader("Total QTY Supplied by Region")
+            if 'Region' in filtered_df.columns: 
+                st.bar_chart(filtered_df.groupby('Region')['Total QTY Supplied'].sum(), width="stretch")
+                
+        with chart_col2:
+            st.subheader("Variance Status Distribution")
+            status_counts = filtered_df['Variance Status'].value_counts().reset_index()
+            status_counts.columns = ['Status', 'Count']
+            color_map = {'🟢 On Target': '#28a745', '🟡 Slight Variance': '#ffc107', '🔴 High Variance': '#dc3545', '⚪ N/A': '#6c757d'}
+            fig = px.bar(status_counts, x='Status', y='Count', color='Status', color_discrete_map=color_map, text='Count')
+            fig.update_layout(showlegend=False, yaxis_title='Number of Records', xaxis_title='')
+            fig.update_traces(textposition='outside')
+            st.plotly_chart(fig, use_container_width=True)
+
+        st.markdown("---")
+
+        # --- 11. HISTORICAL TREND CHART ---
+        st.subheader("📈 Historical CPD Trend")
+        trend_sites = filtered_df['Site ID'].unique()
+        if len(trend_sites) > 0:
+            default_trend_site = selected_site if selected_site != 'All' else trend_sites[0]
+            trend_site_select = st.selectbox("View Trend for Site:", trend_sites, index=list(trend_sites).index(default_trend_site) if default_trend_site in trend_sites else 0)
+            site_trend_data = filtered_df[filtered_df['Site ID'] == trend_site_select].sort_values('Supply Date')
+            
+            if not site_trend_data.empty and site_trend_data['Estimated CPD'].sum() > 0:
+                chart_data_melted = site_trend_data[['Supply Date', 'Estimated CPD', 'Approved CPD']].melt(id_vars='Supply Date', value_vars=['Estimated CPD', 'Approved CPD'], var_name='CPD Type', value_name='Value')
+                fig_line = px.line(chart_data_melted, x='Supply Date', y='Value', color='CPD Type', markers=True, color_discrete_map={'Estimated CPD': '#007bff', 'Approved CPD': '#dc3545'}, title=f'CPD Trend for {trend_site_select}')
+                st.plotly_chart(fig_line, use_container_width=True)
+
+        st.markdown("---")
+
+        # --- 12. DETAILED TABLE & EXCEL EXPORT ---
+        st.subheader("📋 Detailed Data & Analysis")
+        def highlight_var(val):
+            if val > 0: return 'background-color: #d4edda'
+            elif val < 0: return 'background-color: #f8d7da'
+            return ''
+            
+        def highlight_alert(val):
+            if 'CRITICAL' in str(val) or 'OVERDUE' in str(val): return 'background-color: #ffcccc; font-weight: bold;'
+            elif 'WARNING' in str(val): return 'background-color: #fff2cc; font-weight: bold;'
+            return ''
+
+        display_cols = ['Site ID', 'Region', 'Cluster', 'Total QTY Supplied', 'Total QTY Before Supply', 'Approved CPD', 'Estimated CPD', 'CPD Variance', 'Variance Status', 'Supply Date', 'Estimated Next Supply Date', 'Supply Alert', 'Bobtail number']
+        final_cols = [c for c in display_cols if c in filtered_df.columns]
+        display_df = filtered_df[final_cols]
+
+        styled_df = display_df.style.map(highlight_var, subset=['CPD Variance'])
+        if 'Supply Alert' in styled_df.columns: 
+            styled_df = styled_df.map(highlight_alert, subset=['Supply Alert'])
+        
+        def format_num(x): return f"{x:.0f}" if not pd.isnull(x) else ''
+        def format_date(x): return x.strftime('%Y-%m-%d') if not pd.isnull(x) and hasattr(x, 'strftime') else str(x)
+
+        format_dict = {col: format_num for col in ['Total QTY Supplied', 'Total QTY Before Supply', 'Approved CPD', 'Estimated CPD', 'CPD Variance'] if col in display_df.columns}
+        if 'Estimated Next Supply Date' in display_df.columns: format_dict['Estimated Next Supply Date'] = format_date
+        if 'Supply Date' in display_df.columns: format_dict['Supply Date'] = format_date
+
+        st.dataframe(styled_df.format(format_dict), width="stretch", hide_index=True)
+
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer: 
+            display_df.to_excel(writer, index=False, sheet_name='Supply Data')
+            
+        st.download_button(
+            label="📥 Download Filtered Data as Excel", 
+            data=output.getvalue(), 
+            file_name=f"supply_data_{start_date}_to_{end_date}.xlsx", 
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+else:
+    st.info("👆 Database is empty. Use the sidebar to add your first manual entry or upload an Excel file to populate the database!")
