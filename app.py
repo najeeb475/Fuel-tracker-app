@@ -5,13 +5,21 @@ import io
 import plotly.express as px
 import firebase_admin
 from firebase_admin import credentials, firestore
+from streamlit_cookies_manager import EncryptedCookieManager
 
-# --- 1. SECURITY & LOGIN ---
+# --- 1. SECURITY & LOGIN (WITH COOKIES) ---
+# Initialize cookie manager
+cookies = EncryptedCookieManager(prefix="fuel_tracker_app_")
+if not cookies.ready():
+    st.stop()
+
+# Check if user is already logged in via cookies
 if 'logged_in' not in st.session_state:
-    st.session_state.logged_in = False
-    st.session_state.role = None
+    if cookies.get('logged_in') == 'true':
+        st.session_state.logged_in = True
+        st.session_state.role = cookies.get('role')
 
-if not st.session_state.logged_in:
+if 'logged_in' not in st.session_state or not st.session_state.logged_in:
     st.title("🔒 Access Portal")
     st.write("Please select your access level to continue.")
     
@@ -23,6 +31,8 @@ if not st.session_state.logged_in:
         if st.button("Enter as Team"):
             st.session_state.logged_in = True
             st.session_state.role = 'Team'
+            cookies['logged_in'] = 'true'
+            cookies['role'] = 'Team'
             st.rerun()
 
     with tab2:
@@ -33,6 +43,8 @@ if not st.session_state.logged_in:
             if password == "admin123": 
                 st.session_state.logged_in = True
                 st.session_state.role = 'Admin'
+                cookies['logged_in'] = 'true'
+                cookies['role'] = 'Admin'
                 st.rerun()
             else:
                 st.error("Incorrect password. Please try again.")
@@ -43,23 +55,22 @@ st.set_page_config(page_title="Supply & CPD Tracker", layout="wide")
 st.title("📊 Supply & CPD Tracker App")
 
 if st.session_state.role == 'Admin':
-    st.sidebar.success("🔑 Logged in as Admin")
+    st.sidebar.success(" Logged in as Admin")
 else:
     st.sidebar.info("👥 Logged in as Team Member")
 
 if st.sidebar.button("Logout"):
     st.session_state.logged_in = False
     st.session_state.role = None
+    cookies['logged_in'] = 'false'
+    cookies.remove('role')
     st.rerun()
 
 # --- 3. CONNECT TO FIREBASE DATABASE ---
 @st.cache_resource
 def init_firebase():
     try:
-        # Streamlit automatically parses the [firebase_config] section into a dictionary
         config = dict(st.secrets["firebase_config"])
-        
-        # Firebase accepts the dictionary with the multiline private_key string
         cred = credentials.Certificate(config)
         if not firebase_admin._apps:
             firebase_admin.initialize_app(cred, {'databaseURL': st.secrets["firebase_db_url"]})
@@ -99,6 +110,8 @@ if input_method == "Manual Entry":
             site_id = st.text_input("Site ID")
             region = st.text_input("Region")
             cluster = st.text_input("Cluster")
+            # NEW: Zones Dropdown
+            zone = st.selectbox("Zones", ["A1", "A2", "A3"])
             qty_before_t1 = st.number_input("Qty before supply Tank 1", min_value=0.0, format="%.2f")
             qty_supplied_t1 = st.number_input("QTY supplied Tank 1", min_value=0.0, format="%.2f")
             qty_before_t2 = st.number_input("Qty before supply Tank 2", min_value=0.0, format="%.2f")
@@ -107,6 +120,8 @@ if input_method == "Manual Entry":
             approved_cpd = st.number_input("Approved CPD", min_value=0.0, format="%.2f")
             supply_date = st.date_input("Supply Date")
             bobtail = st.text_input("Bobtail number")
+            # NEW: Type of Supply Dropdown
+            supply_type = st.selectbox("Type of supply", ["1st supply", "2nd supply", "3rd supply"])
             
         submitted = st.form_submit_button("💾 Save to Database")
         if submitted:
@@ -119,13 +134,15 @@ if input_method == "Manual Entry":
                     'Site ID': str(site_id), 
                     'Region': str(region), 
                     'Cluster': str(cluster),
+                    'Zones': str(zone),  # NEW
                     'Qty before supply Tank 1': float(qty_before_t1), 
                     'QTY supplied Tank 1': float(qty_supplied_t1),
                     'Qty before supply Tank 2': float(qty_before_t2), 
                     'QTY supplied Tank 2': float(qty_supplied_t2),
                     'Approved CPD': float(approved_cpd), 
                     'Supply Date': supply_date.strftime("%Y-%m-%d"), 
-                    'Bobtail number': str(bobtail)
+                    'Bobtail number': str(bobtail),
+                    'Type of supply': str(supply_type)  # NEW
                 }
                 db.collection('supplies').add(record)
                 st.success("✅ Saved to Firebase successfully!")
@@ -162,6 +179,9 @@ elif input_method == "Upload Excel File":
         if find_col(['region']): rename_map[find_col(['region'])] = 'Region'
         if find_col(['cluster']): rename_map[find_col(['cluster'])] = 'Cluster'
         if find_col(['bobtail']): rename_map[find_col(['bobtail'])] = 'Bobtail number'
+        # NEW: Map Zones and Type of supply columns
+        if find_col(['zone']): rename_map[find_col(['zone'])] = 'Zones'
+        if find_col(['type', 'supply']): rename_map[find_col(['type', 'supply'])] = 'Type of supply'
 
         temp_df.rename(columns=rename_map, inplace=True)
         
@@ -169,6 +189,12 @@ elif input_method == "Upload Excel File":
         for col in required_cols:
             if col not in temp_df.columns: 
                 temp_df[col] = 0.0 if 'Qty' in col or 'CPD' in col else ''
+        
+        # NEW: Add default values for Zones and Type of supply if not present
+        if 'Zones' not in temp_df.columns:
+            temp_df['Zones'] = 'A1'  # Default to A1
+        if 'Type of supply' not in temp_df.columns:
+            temp_df['Type of supply'] = '1st supply'  # Default to 1st supply
 
         count = 0
         for index, row in temp_df.iterrows():
@@ -182,13 +208,15 @@ elif input_method == "Upload Excel File":
                 'Site ID': str(row['Site ID']), 
                 'Region': str(row['Region']), 
                 'Cluster': str(row['Cluster']),
+                'Zones': str(row.get('Zones', 'A1')),  # NEW
                 'Qty before supply Tank 1': float(row['Qty before supply Tank 1']), 
                 'QTY supplied Tank 1': float(row['QTY supplied Tank 1']),
                 'Qty before supply Tank 2': float(row['Qty before supply Tank 2']), 
                 'QTY supplied Tank 2': float(row['QTY supplied Tank 2']),
                 'Approved CPD': float(row['Approved CPD']), 
                 'Supply Date': date_val, 
-                'Bobtail number': str(row['Bobtail number'])
+                'Bobtail number': str(row['Bobtail number']),
+                'Type of supply': str(row.get('Type of supply', '1st supply'))  # NEW
             }
             db.collection('supplies').add(record)
             count += 1
@@ -199,8 +227,8 @@ elif input_method == "Upload Excel File":
 # --- 6. ADMIN CONTROLS ---
 if st.session_state.role == 'Admin':
     st.sidebar.markdown("---")
-    st.sidebar.subheader("🔑 Admin Controls")
-    if st.sidebar.button("🗑️ Clear Database (Danger)"): 
+    st.sidebar.subheader(" Admin Controls")
+    if st.sidebar.button("️ Clear Database (Danger)"): 
         if st.sidebar.checkbox("Are you sure? This deletes everything permanently."):
             docs = db.collection('supplies').stream()
             for doc in docs:
@@ -281,7 +309,7 @@ if not df.empty:
         df['Supply Alert'] = df['Estimated Next Supply Date'].apply(get_supply_alert)
 
     # --- 8. SIDEBAR FILTERS ---
-    st.sidebar.header("🔍 Filters")
+    st.sidebar.header(" Filters")
     min_date = df['Supply Date'].min().date()
     max_date = df['Supply Date'].max().date()
     
@@ -294,12 +322,22 @@ if not df.empty:
     clusters = ['All'] + list(df['Cluster'].dropna().unique()) if 'Cluster' in df.columns else ['All']
     selected_cluster = st.sidebar.selectbox("Cluster", clusters)
     
+    # NEW: Filter by Zones
+    zones = ['All'] + list(df['Zones'].dropna().unique()) if 'Zones' in df.columns else ['All']
+    selected_zone = st.sidebar.selectbox("Zones", zones)
+    
+    # NEW: Filter by Type of Supply
+    supply_types = ['All'] + list(df['Type of supply'].dropna().unique()) if 'Type of supply' in df.columns else ['All']
+    selected_supply_type = st.sidebar.selectbox("Type of Supply", supply_types)
+    
     sites = ['All'] + list(df['Site ID'].dropna().unique()) if 'Site ID' in df.columns else ['All']
     selected_site = st.sidebar.selectbox("Site ID", sites)
 
     mask = ((df['Supply Date'].dt.date >= start_date) & (df['Supply Date'].dt.date <= end_date))
     if selected_region != 'All': mask &= (df['Region'] == selected_region)
     if selected_cluster != 'All': mask &= (df['Cluster'] == selected_cluster)
+    if selected_zone != 'All': mask &= (df['Zones'] == selected_zone)  # NEW
+    if selected_supply_type != 'All': mask &= (df['Type of supply'] == selected_supply_type)  # NEW
     if selected_site != 'All': mask &= (df['Site ID'] == selected_site)
     
     filtered_df = df[mask].copy()
@@ -308,7 +346,7 @@ if not df.empty:
         st.warning("No data found for the selected filters.")
     else:
         # --- 9. SUMMARY DASHBOARD ---
-        st.subheader("📊 Summary Dashboard")
+        st.subheader(" Summary Dashboard")
         
         total_sites = filtered_df['Site ID'].nunique()
         total_supplied = filtered_df['Total QTY Supplied'].sum()
@@ -323,6 +361,38 @@ if not df.empty:
         col4.metric("High Variance Sites", high_variance_count, delta="-" if high_variance_count > 0 else "0")
         col5.metric("Urgent Supplies", urgent_supplies, delta="Action" if urgent_supplies > 0 else "Good")
 
+        st.markdown("---")
+
+        # --- NEW: SITES BY ZONE ---
+        st.subheader("📍 Sites by Zone")
+        if 'Zones' in filtered_df.columns:
+            zone_col1, zone_col2, zone_col3 = st.columns(3)
+            with zone_col1:
+                zone_a1 = len(filtered_df[filtered_df['Zones'] == 'A1'])
+                st.metric(label="Zone A1", value=zone_a1)
+            with zone_col2:
+                zone_a2 = len(filtered_df[filtered_df['Zones'] == 'A2'])
+                st.metric(label="Zone A2", value=zone_a2)
+            with zone_col3:
+                zone_a3 = len(filtered_df[filtered_df['Zones'] == 'A3'])
+                st.metric(label="Zone A3", value=zone_a3)
+        
+        st.markdown("---")
+
+        # --- NEW: SITES BY SUPPLY TYPE ---
+        st.subheader("🚛 Sites by Supply Type")
+        if 'Type of supply' in filtered_df.columns:
+            supply_col1, supply_col2, supply_col3 = st.columns(3)
+            with supply_col1:
+                supply_1st = len(filtered_df[filtered_df['Type of supply'] == '1st supply'])
+                st.metric(label="1st Supply", value=supply_1st)
+            with supply_col2:
+                supply_2nd = len(filtered_df[filtered_df['Type of supply'] == '2nd supply'])
+                st.metric(label="2nd Supply", value=supply_2nd)
+            with supply_col3:
+                supply_3rd = len(filtered_df[filtered_df['Type of supply'] == '3rd supply'])
+                st.metric(label="3rd Supply", value=supply_3rd)
+        
         st.markdown("---")
 
         # --- 10. CHARTS ---
@@ -371,7 +441,7 @@ if not df.empty:
             elif 'WARNING' in str(val): return 'background-color: #fff2cc; font-weight: bold;'
             return ''
 
-        display_cols = ['Site ID', 'Region', 'Cluster', 'Total QTY Supplied', 'Total QTY Before Supply', 'Approved CPD', 'Estimated CPD', 'CPD Variance', 'Variance Status', 'Supply Date', 'Estimated Next Supply Date', 'Supply Alert', 'Bobtail number']
+        display_cols = ['Site ID', 'Region', 'Cluster', 'Zones', 'Type of supply', 'Total QTY Supplied', 'Total QTY Before Supply', 'Approved CPD', 'Estimated CPD', 'CPD Variance', 'Variance Status', 'Supply Date', 'Estimated Next Supply Date', 'Supply Alert', 'Bobtail number']
         final_cols = [c for c in display_cols if c in filtered_df.columns]
         display_df = filtered_df[final_cols]
 
