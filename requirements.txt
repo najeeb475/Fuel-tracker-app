@@ -3,3 +3,4 @@
    openpyxl
    plotly
    firebase-admin
+   streamlit-cookies-manager
