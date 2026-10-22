@@ -88,6 +88,14 @@ if db:
             df = pd.DataFrame(data)
             if 'Supply Date' in df.columns:
                 df['Supply Date'] = pd.to_datetime(df['Supply Date'], errors='coerce')
+            
+            # 🛠️ FIX 1: AUTOMATIC DATA CLEANING (Removes spaces, standardizes capitalization)
+            if not df.empty:
+                if 'Zones' in df.columns:
+                    df['Zones'] = df['Zones'].astype(str).str.strip().str.upper()
+                if 'Type of supply' in df.columns:
+                    df['Type of supply'] = df['Type of supply'].astype(str).str.strip().str.lower()
+                    
     except Exception as e:
         st.warning("Database is empty. You can start adding data!")
 
@@ -129,7 +137,7 @@ if input_method == "Manual Entry":
                     'Site ID': str(site_id), 
                     'Region': str(region), 
                     'Cluster': str(cluster),
-                    'Zones': str(zone),
+                    'Zones': str(zone).strip().upper(),
                     'Qty before supply Tank 1': float(qty_before_t1), 
                     'QTY supplied Tank 1': float(qty_supplied_t1),
                     'Qty before supply Tank 2': float(qty_before_t2), 
@@ -137,7 +145,7 @@ if input_method == "Manual Entry":
                     'Approved CPD': float(approved_cpd), 
                     'Supply Date': supply_date.strftime("%Y-%m-%d"), 
                     'Bobtail number': str(bobtail),
-                    'Type of supply': str(supply_type)
+                    'Type of supply': str(supply_type).strip().lower()
                 }
                 db.collection('supplies').add(record)
                 st.success("✅ Saved to Firebase successfully!")
@@ -197,11 +205,15 @@ elif input_method == "Upload Excel File":
             else: 
                 date_val = str(date_val)
             
+            # 🛠️ FIX 2: CLEAN DATA DURING UPLOAD TO PREVENT MISMATCHES
+            zone_val = str(row.get('Zones', 'A1')).strip().upper()
+            supply_type_val = str(row.get('Type of supply', '1st supply')).strip().lower()
+            
             record = {
                 'Site ID': str(row['Site ID']), 
                 'Region': str(row['Region']), 
                 'Cluster': str(row['Cluster']),
-                'Zones': str(row.get('Zones', 'A1')),
+                'Zones': zone_val,
                 'Qty before supply Tank 1': float(row['Qty before supply Tank 1']), 
                 'QTY supplied Tank 1': float(row['QTY supplied Tank 1']),
                 'Qty before supply Tank 2': float(row['Qty before supply Tank 2']), 
@@ -209,7 +221,7 @@ elif input_method == "Upload Excel File":
                 'Approved CPD': float(row['Approved CPD']), 
                 'Supply Date': date_val, 
                 'Bobtail number': str(row['Bobtail number']),
-                'Type of supply': str(row.get('Type of supply', '1st supply'))
+                'Type of supply': supply_type_val
             }
             db.collection('supplies').add(record)
             count += 1
@@ -354,34 +366,34 @@ if not df.empty:
 
         st.markdown("---")
 
-        # --- SITES BY ZONE ---
+        # 🛠️ FIX 3: COUNT UNIQUE SITES INSTEAD OF ROWS FOR ZONES
         st.subheader("📍 Sites by Zone")
         if 'Zones' in filtered_df.columns:
             zone_col1, zone_col2, zone_col3 = st.columns(3)
             with zone_col1:
-                zone_a1 = len(filtered_df[filtered_df['Zones'] == 'A1'])
+                zone_a1 = filtered_df[filtered_df['Zones'] == 'A1']['Site ID'].nunique()
                 st.metric(label="Zone A1", value=zone_a1)
             with zone_col2:
-                zone_a2 = len(filtered_df[filtered_df['Zones'] == 'A2'])
+                zone_a2 = filtered_df[filtered_df['Zones'] == 'A2']['Site ID'].nunique()
                 st.metric(label="Zone A2", value=zone_a2)
             with zone_col3:
-                zone_a3 = len(filtered_df[filtered_df['Zones'] == 'A3'])
+                zone_a3 = filtered_df[filtered_df['Zones'] == 'A3']['Site ID'].nunique()
                 st.metric(label="Zone A3", value=zone_a3)
         
         st.markdown("---")
 
-        # --- SITES BY SUPPLY TYPE ---
+        # 🛠️ FIX 4: COUNT UNIQUE SITES INSTEAD OF ROWS FOR SUPPLY TYPE
         st.subheader("🚛 Sites by Supply Type")
         if 'Type of supply' in filtered_df.columns:
             supply_col1, supply_col2, supply_col3 = st.columns(3)
             with supply_col1:
-                supply_1st = len(filtered_df[filtered_df['Type of supply'] == '1st supply'])
+                supply_1st = filtered_df[filtered_df['Type of supply'] == '1st supply']['Site ID'].nunique()
                 st.metric(label="1st Supply", value=supply_1st)
             with supply_col2:
-                supply_2nd = len(filtered_df[filtered_df['Type of supply'] == '2nd supply'])
+                supply_2nd = filtered_df[filtered_df['Type of supply'] == '2nd supply']['Site ID'].nunique()
                 st.metric(label="2nd Supply", value=supply_2nd)
             with supply_col3:
-                supply_3rd = len(filtered_df[filtered_df['Type of supply'] == '3rd supply'])
+                supply_3rd = filtered_df[filtered_df['Type of supply'] == '3rd supply']['Site ID'].nunique()
                 st.metric(label="3rd Supply", value=supply_3rd)
         
         st.markdown("---")
