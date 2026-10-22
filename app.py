@@ -16,7 +16,7 @@ if 'logged_in' not in st.session_state:
 
 if 'logged_in' not in st.session_state or not st.session_state.logged_in:
     st.title("🔒 Access Portal")
-    tab1, tab2 = st.tabs(["👥 Team Access", "🔑 Admin Login"])
+    tab1, tab2 = st.tabs([" Team Access", "🔑 Admin Login"])
     with tab1:
         if st.button("Enter as Team"):
             st.session_state.logged_in = True; st.session_state.role = 'Team'
@@ -65,15 +65,21 @@ if db:
         data = [doc.to_dict() for doc in docs]
         if data:
             df = pd.DataFrame(data)
+            # ️ FIX: Safer date conversion
             if 'Supply Date' in df.columns:
                 df['Supply Date'] = pd.to_datetime(df['Supply Date'], errors='coerce')
+            elif 'Date' in df.columns: # If column is just named "Date"
+                df = df.rename(columns={'Date': 'Supply Date'})
+                df['Supply Date'] = pd.to_datetime(df['Supply Date'], errors='coerce')
+            
             if not df.empty:
                 if 'Zones' in df.columns: df['Zones'] = df['Zones'].astype(str).str.strip().str.upper()
+                st.sidebar.info(f"📊 Loaded {len(df)} records from database.")
     except Exception as e:
-        st.warning("Database is empty.")
+        st.warning(f"Database load issue: {e}")
 
 # --- 5. DATA INPUT ---
-st.sidebar.header("📥 Data Input")
+st.sidebar.header(" Data Input")
 input_method = st.sidebar.radio("How would you like to input data?", ("Manual Entry", "Upload Excel File"), horizontal=True)
 
 if input_method == "Manual Entry":
@@ -107,24 +113,28 @@ if input_method == "Manual Entry":
 elif input_method == "Upload Excel File":
     st.sidebar.subheader("Upload Excel to Database")
     
-    # 1. The File Picker
     uploaded_file = st.sidebar.file_uploader("Choose your Excel or CSV file", type=["xlsx", "csv"])
     
-    # 2. Save the file to memory so it doesn't get lost
     if uploaded_file is not None:
         st.session_state['file_to_upload'] = uploaded_file
         st.sidebar.success(f"✅ File '{uploaded_file.name}' is ready.")
     
-    # 3. The Button to trigger the upload
     if 'file_to_upload' in st.session_state:
-        if st.sidebar.button(" CLICK HERE TO UPLOAD DATA TO DASHBOARD", type="primary"):
+        if st.sidebar.button("🚀 CLICK HERE TO UPLOAD DATA TO DASHBOARD", type="primary"):
             file_to_process = st.session_state['file_to_upload']
             if not db:
                 st.sidebar.error("❌ Database not connected.")
             else:
                 try:
                     if file_to_process.name.endswith('.csv'): temp_df = pd.read_csv(file_to_process)
-                    else: temp_df = pd.read_excel(file_to_process)
+                    else: temp_df = pd.read_excel(file_to_process) # Reads first sheet by default
+                    
+                    # 🛠️ FIX: Check if file is empty
+                    if temp_df.empty:
+                        st.sidebar.error("❌ The file appears to be empty or data is not on the first sheet.")
+                        st.stop()
+                    
+                    st.sidebar.info(f" Found {len(temp_df)} rows in file. Columns: {list(temp_df.columns)}")
                     
                     temp_df.columns = [str(c).strip() for c in temp_df.columns]
                     def find_col(keywords, exclude=None):
@@ -140,7 +150,10 @@ elif input_method == "Upload Excel File":
                     if find_col(['before', 'tank', '2']): rename_map[find_col(['before', 'tank', '2'])] = 'Qty before supply Tank 2'
                     if find_col(['suppl', 'tank', '2'], exclude=['before']): rename_map[find_col(['suppl', 'tank', '2'], exclude=['before'])] = 'QTY supplied Tank 2'
                     if find_col(['approved', 'cpd']): rename_map[find_col(['approved', 'cpd'])] = 'Approved CPD'
-                    if find_col(['supply', 'date']): rename_map[find_col(['supply', 'date'])] = 'Supply Date'
+                    # 🛠️ FIX: Look for 'date' OR 'supply date'
+                    date_col = find_col(['supply', 'date']) or find_col(['date'])
+                    if date_col: rename_map[date_col] = 'Supply Date'
+                    
                     if find_col(['site']): rename_map[find_col(['site'])] = 'Site ID'
                     if find_col(['region']): rename_map[find_col(['region'])] = 'Region'
                     if find_col(['cluster']): rename_map[find_col(['cluster'])] = 'Cluster'
@@ -182,12 +195,11 @@ elif input_method == "Upload Excel File":
                         db.collection('supplies').add(record)
                         count += 1
                         
-                        # 🛠️ FIX: Corrected progress bar calculation to stay between 0.0 and 1.0
                         progress_val = min(count / total_rows, 1.0)
                         progress_bar.progress(progress_val)
                     
                     st.sidebar.success(f"✅ Successfully uploaded {count} rows!")
-                    del st.session_state['file_to_upload'] # Clear memory
+                    del st.session_state['file_to_upload']
                     st.rerun()
                 except Exception as e:
                     st.sidebar.error(f"❌ Upload failed: {str(e)}")
@@ -236,29 +248,36 @@ if not df.empty:
         df['CPD Variance'] = df.apply(calc_variance, axis=1)
         
         def get_status(row):
-            if row['Estimated CPD'] == 0 or pd.isnull(row['Estimated CPD']): return "⚪ N/A"
+            if row['Estimated CPD'] == 0 or pd.isnull(row['Estimated CPD']): return " N/A"
             app = row['Approved CPD']; var = row['CPD Variance']
             if app == 0: return "⚪ N/A"
             pct = abs(var) / app
             if pct <= 0.05: return "🟢 On Target"
             elif pct <= 0.15: return "🟡 Slight Variance"
-            else: return "🔴 High Variance"
+            else: return " High Variance"
         df['Variance Status'] = df.apply(get_status, axis=1)
 
         today = pd.Timestamp.today().date()
         def get_supply_alert(next_date):
             if pd.isnull(next_date): return ""
             days_diff = (next_date - today).days
-            if days_diff < 0: return " OVERDUE"
-            elif days_diff == 0: return "🔴 CRITICAL: Supply Today"
+            if days_diff < 0: return "🚨 OVERDUE"
+            elif days_diff == 0: return " CRITICAL: Supply Today"
             elif days_diff <= 2: return f"🟡 WARNING: Supply in {days_diff} days"
             else: return ""
         df['Supply Alert'] = df['Estimated Next Supply Date'].apply(get_supply_alert)
 
-    st.sidebar.header(" Filters")
-    min_date = df['Supply Date'].min().date(); max_date = df['Supply Date'].max().date()
-    start_date = st.sidebar.date_input("Start Date", value=min_date, min_value=min_date, max_value=max_date)
-    end_date = st.sidebar.date_input("End Date", value=max_date, min_value=min_date, max_value=max_date)
+    st.sidebar.header("🔍 Filters")
+    # 🛠️ FIX: Handle case where dates might be NaT
+    valid_dates = df['Supply Date'].dropna()
+    if not valid_dates.empty:
+        min_date = valid_dates.min().date(); max_date = valid_dates.max().date()
+        start_date = st.sidebar.date_input("Start Date", value=min_date, min_value=min_date, max_value=max_date)
+        end_date = st.sidebar.date_input("End Date", value=max_date, min_value=min_date, max_value=max_date)
+    else:
+        start_date = st.sidebar.date_input("Start Date", value=date(2023, 1, 1))
+        end_date = st.sidebar.date_input("End Date", value=date(2026, 12, 31))
+
     regions = ['All'] + list(df['Region'].dropna().unique()) if 'Region' in df.columns else ['All']
     selected_region = st.sidebar.selectbox("Region", regions)
     clusters = ['All'] + list(df['Cluster'].dropna().unique()) if 'Cluster' in df.columns else ['All']
@@ -280,7 +299,7 @@ if not df.empty:
 
     if filtered_df.empty: st.warning("No data found for the selected filters.")
     else:
-        st.subheader("📊 Summary Dashboard")
+        st.subheader(" Summary Dashboard")
         total_sites = filtered_df['Site ID'].nunique()
         total_supplied = filtered_df['Total QTY Supplied'].sum()
         high_variance_count = (filtered_df['Variance Status'] == '🔴 High Variance').sum()
@@ -319,7 +338,7 @@ if not df.empty:
             st.subheader("Variance Status Distribution")
             status_counts = filtered_df['Variance Status'].value_counts().reset_index()
             status_counts.columns = ['Status', 'Count']
-            color_map = {' On Target': '#28a745', '🟡 Slight Variance': '#ffc107', '🔴 High Variance': '#dc3545', '⚪ N/A': '#6c757d'}
+            color_map = {'🟢 On Target': '#28a745', '🟡 Slight Variance': '#ffc107', '🔴 High Variance': '#dc3545', ' N/A': '#6c757d'}
             fig = px.bar(status_counts, x='Status', y='Count', color='Status', color_discrete_map=color_map, text='Count')
             fig.update_layout(showlegend=False, yaxis_title='Count', xaxis_title='')
             st.plotly_chart(fig, use_container_width=True)
@@ -330,4 +349,4 @@ if not df.empty:
         st.dataframe(filtered_df[final_cols], width="stretch", hide_index=True)
 
 else:
-    st.info("👆 Database is empty. Use the sidebar to upload an Excel file!")
+    st.info(" Database is empty. Use the sidebar to upload an Excel file!")
