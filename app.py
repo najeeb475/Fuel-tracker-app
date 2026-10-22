@@ -15,8 +15,8 @@ if 'logged_in' not in st.session_state:
         st.session_state.role = controller.get('role')
 
 if 'logged_in' not in st.session_state or not st.session_state.logged_in:
-    st.title(" Access Portal")
-    tab1, tab2 = st.tabs(["👥 Team Access", " Admin Login"])
+    st.title("🔒 Access Portal")
+    tab1, tab2 = st.tabs(["👥 Team Access", "🔑 Admin Login"])
     with tab1:
         if st.button("Enter as Team"):
             st.session_state.logged_in = True; st.session_state.role = 'Team'
@@ -117,10 +117,10 @@ elif input_method == "Upload Excel File":
     
     # 3. The Button to trigger the upload
     if 'file_to_upload' in st.session_state:
-        if st.sidebar.button("🚀 CLICK HERE TO UPLOAD DATA TO DASHBOARD", type="primary"):
+        if st.sidebar.button(" CLICK HERE TO UPLOAD DATA TO DASHBOARD", type="primary"):
             file_to_process = st.session_state['file_to_upload']
             if not db:
-                st.sidebar.error(" Database not connected.")
+                st.sidebar.error("❌ Database not connected.")
             else:
                 try:
                     if file_to_process.name.endswith('.csv'): temp_df = pd.read_csv(file_to_process)
@@ -156,7 +156,9 @@ elif input_method == "Upload Excel File":
                     if 'Type of supply' not in temp_df.columns: temp_df['Type of supply'] = '1st supply'
 
                     count = 0
-                    progress_bar = st.sidebar.progress(0)
+                    progress_bar = st.sidebar.progress(0.0)
+                    total_rows = len(temp_df)
+                    
                     for index, row in temp_df.iterrows():
                         date_val = row['Supply Date']
                         if hasattr(date_val, 'strftime'): date_val = date_val.strftime("%Y-%m-%d")
@@ -179,7 +181,10 @@ elif input_method == "Upload Excel File":
                                   'Approved CPD': cpd, 'Supply Date': date_val, 'Bobtail number': str(row['Bobtail number']), 'Type of supply': supply_type_val}
                         db.collection('supplies').add(record)
                         count += 1
-                        progress_bar.progress((count / len(temp_df)) * 100)
+                        
+                        # 🛠️ FIX: Corrected progress bar calculation to stay between 0.0 and 1.0
+                        progress_val = min(count / total_rows, 1.0)
+                        progress_bar.progress(progress_val)
                     
                     st.sidebar.success(f"✅ Successfully uploaded {count} rows!")
                     del st.session_state['file_to_upload'] # Clear memory
@@ -236,7 +241,7 @@ if not df.empty:
             if app == 0: return "⚪ N/A"
             pct = abs(var) / app
             if pct <= 0.05: return "🟢 On Target"
-            elif pct <= 0.15: return " Slight Variance"
+            elif pct <= 0.15: return "🟡 Slight Variance"
             else: return "🔴 High Variance"
         df['Variance Status'] = df.apply(get_status, axis=1)
 
@@ -244,13 +249,13 @@ if not df.empty:
         def get_supply_alert(next_date):
             if pd.isnull(next_date): return ""
             days_diff = (next_date - today).days
-            if days_diff < 0: return "🚨 OVERDUE"
+            if days_diff < 0: return " OVERDUE"
             elif days_diff == 0: return "🔴 CRITICAL: Supply Today"
-            elif days_diff <= 2: return f" WARNING: Supply in {days_diff} days"
+            elif days_diff <= 2: return f"🟡 WARNING: Supply in {days_diff} days"
             else: return ""
         df['Supply Alert'] = df['Estimated Next Supply Date'].apply(get_supply_alert)
 
-    st.sidebar.header("🔍 Filters")
+    st.sidebar.header(" Filters")
     min_date = df['Supply Date'].min().date(); max_date = df['Supply Date'].max().date()
     start_date = st.sidebar.date_input("Start Date", value=min_date, min_value=min_date, max_value=max_date)
     end_date = st.sidebar.date_input("End Date", value=max_date, min_value=min_date, max_value=max_date)
@@ -278,7 +283,7 @@ if not df.empty:
         st.subheader("📊 Summary Dashboard")
         total_sites = filtered_df['Site ID'].nunique()
         total_supplied = filtered_df['Total QTY Supplied'].sum()
-        high_variance_count = (filtered_df['Variance Status'] == ' High Variance').sum()
+        high_variance_count = (filtered_df['Variance Status'] == '🔴 High Variance').sum()
         urgent_supplies = filtered_df['Supply Alert'].apply(lambda x: 1 if 'CRITICAL' in str(x) or 'WARNING' in str(x) or 'OVERDUE' in str(x) else 0).sum()
 
         col1, col2, col3, col4, col5 = st.columns(5)
@@ -297,7 +302,7 @@ if not df.empty:
             with z3: st.metric("Zone A3", filtered_df[filtered_df['Zones'] == 'A3']['Site ID'].nunique())
         st.markdown("---")
 
-        st.subheader(" Sites by Supply Type")
+        st.subheader("🚛 Sites by Supply Type")
         if 'Type of supply' in filtered_df.columns:
             supply_counts = filtered_df.groupby('Type of supply')['Site ID'].nunique().sort_values(ascending=False)
             if len(supply_counts) > 0:
@@ -314,7 +319,7 @@ if not df.empty:
             st.subheader("Variance Status Distribution")
             status_counts = filtered_df['Variance Status'].value_counts().reset_index()
             status_counts.columns = ['Status', 'Count']
-            color_map = {'🟢 On Target': '#28a745', '🟡 Slight Variance': '#ffc107', '🔴 High Variance': '#dc3545', '⚪ N/A': '#6c757d'}
+            color_map = {' On Target': '#28a745', '🟡 Slight Variance': '#ffc107', '🔴 High Variance': '#dc3545', '⚪ N/A': '#6c757d'}
             fig = px.bar(status_counts, x='Status', y='Count', color='Status', color_discrete_map=color_map, text='Count')
             fig.update_layout(showlegend=False, yaxis_title='Count', xaxis_title='')
             st.plotly_chart(fig, use_container_width=True)
