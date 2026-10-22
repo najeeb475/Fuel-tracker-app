@@ -10,7 +10,6 @@ from streamlit_cookies_controller import CookieController
 # --- 1. SECURITY & LOGIN (WITH COOKIES) ---
 controller = CookieController()
 
-# Check if user is already logged in via cookies
 if 'logged_in' not in st.session_state:
     if controller.get('logged_in') == 'true':
         st.session_state.logged_in = True
@@ -89,12 +88,11 @@ if db:
             if 'Supply Date' in df.columns:
                 df['Supply Date'] = pd.to_datetime(df['Supply Date'], errors='coerce')
             
-            # 🛠️ FIX 1: AUTOMATIC DATA CLEANING (Removes spaces, standardizes capitalization)
+            # 🛠️ FIX 1: AUTOMATIC DATA CLEANING (Removes spaces, standardizes capitalization for Zones)
             if not df.empty:
                 if 'Zones' in df.columns:
                     df['Zones'] = df['Zones'].astype(str).str.strip().str.upper()
-                if 'Type of supply' in df.columns:
-                    df['Type of supply'] = df['Type of supply'].astype(str).str.strip().str.lower()
+                # Note: We do NOT standardize 'Type of supply' anymore so it keeps "Oct 1st supply" format
                     
     except Exception as e:
         st.warning("Database is empty. You can start adding data!")
@@ -124,7 +122,7 @@ if input_method == "Manual Entry":
             approved_cpd = st.number_input("Approved CPD", min_value=0.0, format="%.2f")
             supply_date = st.date_input("Supply Date")
             bobtail = st.text_input("Bobtail number")
-            supply_type = st.selectbox("Type of supply", ["1st supply", "2nd supply", "3rd supply"])
+            supply_type = st.text_input("Type of supply", value="Oct 1st supply") # Changed to text input for flexibility
             
         submitted = st.form_submit_button("💾 Save to Database")
         if submitted:
@@ -145,7 +143,7 @@ if input_method == "Manual Entry":
                     'Approved CPD': float(approved_cpd), 
                     'Supply Date': supply_date.strftime("%Y-%m-%d"), 
                     'Bobtail number': str(bobtail),
-                    'Type of supply': str(supply_type).strip().lower()
+                    'Type of supply': str(supply_type).strip() # Keep original format
                 }
                 db.collection('supplies').add(record)
                 st.success("✅ Saved to Firebase successfully!")
@@ -205,20 +203,30 @@ elif input_method == "Upload Excel File":
             else: 
                 date_val = str(date_val)
             
-            # 🛠️ FIX 2: CLEAN DATA DURING UPLOAD TO PREVENT MISMATCHES
             zone_val = str(row.get('Zones', 'A1')).strip().upper()
-            supply_type_val = str(row.get('Type of supply', '1st supply')).strip().lower()
+            # 🛠️ FIX 2: Keep original supply type format (e.g., "Oct 1st supply")
+            supply_type_val = str(row.get('Type of supply', '1st supply')).strip()
             
+            # 🛠️ FIX 3: Ensure quantities are numbers before saving
+            try:
+                q_b_t1 = float(row['Qty before supply Tank 1']) if pd.notnull(row['Qty before supply Tank 1']) else 0.0
+                q_s_t1 = float(row['QTY supplied Tank 1']) if pd.notnull(row['QTY supplied Tank 1']) else 0.0
+                q_b_t2 = float(row['Qty before supply Tank 2']) if pd.notnull(row['Qty before supply Tank 2']) else 0.0
+                q_s_t2 = float(row['QTY supplied Tank 2']) if pd.notnull(row['QTY supplied Tank 2']) else 0.0
+                cpd = float(row['Approved CPD']) if pd.notnull(row['Approved CPD']) else 0.0
+            except:
+                q_b_t1, q_s_t1, q_b_t2, q_s_t2, cpd = 0.0, 0.0, 0.0, 0.0, 0.0
+
             record = {
                 'Site ID': str(row['Site ID']), 
                 'Region': str(row['Region']), 
                 'Cluster': str(row['Cluster']),
                 'Zones': zone_val,
-                'Qty before supply Tank 1': float(row['Qty before supply Tank 1']), 
-                'QTY supplied Tank 1': float(row['QTY supplied Tank 1']),
-                'Qty before supply Tank 2': float(row['Qty before supply Tank 2']), 
-                'QTY supplied Tank 2': float(row['QTY supplied Tank 2']),
-                'Approved CPD': float(row['Approved CPD']), 
+                'Qty before supply Tank 1': q_b_t1, 
+                'QTY supplied Tank 1': q_s_t1,
+                'Qty before supply Tank 2': q_b_t2, 
+                'QTY supplied Tank 2': q_s_t2,
+                'Approved CPD': cpd, 
                 'Supply Date': date_val, 
                 'Bobtail number': str(row['Bobtail number']),
                 'Type of supply': supply_type_val
@@ -248,6 +256,7 @@ if not df.empty:
     if 'Supply Date' in df.columns and 'Site ID' in df.columns:
         df = df.sort_values(by=['Site ID', 'Supply Date'])
         
+        # 🛠️ FIX 4: Force convert quantity columns to numeric to fix calculation errors
         for col in ['Qty before supply Tank 1', 'QTY supplied Tank 1', 'Qty before supply Tank 2', 'QTY supplied Tank 2', 'Approved CPD']:
             if col in df.columns: 
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
@@ -284,7 +293,7 @@ if not df.empty:
         
         def get_status(row):
             if row['Estimated CPD'] == 0 or pd.isnull(row['Estimated CPD']): 
-                return "⚪ N/A"
+                return " N/A"
             app = row['Approved CPD']
             var = row['CPD Variance']
             if app == 0: 
@@ -349,9 +358,10 @@ if not df.empty:
         st.warning("No data found for the selected filters.")
     else:
         # --- 9. SUMMARY DASHBOARD ---
-        st.subheader("📊 Summary Dashboard")
+        st.subheader(" Summary Dashboard")
         
         total_sites = filtered_df['Site ID'].nunique()
+        # 🛠️ FIX 5: Ensure Total Fuel Supplied is calculated correctly
         total_supplied = filtered_df['Total QTY Supplied'].sum()
         high_variance_count = (filtered_df['Variance Status'] == '🔴 High Variance').sum()
         sites_supplied_in_range = filtered_df['Site ID'].nunique()
@@ -366,7 +376,7 @@ if not df.empty:
 
         st.markdown("---")
 
-        # 🛠️ FIX 3: COUNT UNIQUE SITES INSTEAD OF ROWS FOR ZONES
+        # --- SITES BY ZONE ---
         st.subheader("📍 Sites by Zone")
         if 'Zones' in filtered_df.columns:
             zone_col1, zone_col2, zone_col3 = st.columns(3)
@@ -382,19 +392,20 @@ if not df.empty:
         
         st.markdown("---")
 
-        # 🛠️ FIX 4: COUNT UNIQUE SITES INSTEAD OF ROWS FOR SUPPLY TYPE
+        # 🛠️ FIX 6: DYNAMIC SITES BY SUPPLY TYPE (Shows "Oct 1st supply", etc.)
         st.subheader("🚛 Sites by Supply Type")
         if 'Type of supply' in filtered_df.columns:
-            supply_col1, supply_col2, supply_col3 = st.columns(3)
-            with supply_col1:
-                supply_1st = filtered_df[filtered_df['Type of supply'] == '1st supply']['Site ID'].nunique()
-                st.metric(label="1st Supply", value=supply_1st)
-            with supply_col2:
-                supply_2nd = filtered_df[filtered_df['Type of supply'] == '2nd supply']['Site ID'].nunique()
-                st.metric(label="2nd Supply", value=supply_2nd)
-            with supply_col3:
-                supply_3rd = filtered_df[filtered_df['Type of supply'] == '3rd supply']['Site ID'].nunique()
-                st.metric(label="3rd Supply", value=supply_3rd)
+            # Group by supply type and count unique sites
+            supply_counts = filtered_df.groupby('Type of supply')['Site ID'].nunique().sort_values(ascending=False)
+            
+            # Create columns dynamically based on how many types exist
+            num_types = len(supply_counts)
+            if num_types > 0:
+                # Display up to 4 per row, then wrap
+                cols = st.columns(min(num_types, 4))
+                for i, (supply_type, count) in enumerate(supply_counts.items()):
+                    with cols[i % 4]:
+                        st.metric(label=str(supply_type).title(), value=count)
         
         st.markdown("---")
 
@@ -433,7 +444,7 @@ if not df.empty:
         st.markdown("---")
 
         # --- 12. DETAILED TABLE & EXCEL EXPORT ---
-        st.subheader("📋 Detailed Data & Analysis")
+        st.subheader(" Detailed Data & Analysis")
         def highlight_var(val):
             if val > 0: return 'background-color: #d4edda'
             elif val < 0: return 'background-color: #f8d7da'
