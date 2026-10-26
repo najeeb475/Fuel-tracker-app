@@ -7,6 +7,16 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 from streamlit_cookies_controller import CookieController
 
+# --- HELPER FUNCTION TO CLEAN NUMBERS ---
+def clean_numeric(val):
+    """Converts messy Excel text (like '1,000' or '500 L') to a clean float."""
+    if pd.isnull(val): return 0.0
+    val_str = str(val).replace(',', '').replace(' ', '').replace('L', '').replace('l', '')
+    try: 
+        return float(val_str)
+    except: 
+        return 0.0
+
 # --- 1. SECURITY & LOGIN ---
 controller = CookieController()
 if 'logged_in' not in st.session_state:
@@ -16,7 +26,7 @@ if 'logged_in' not in st.session_state:
 
 if 'logged_in' not in st.session_state or not st.session_state.logged_in:
     st.title("🔒 Access Portal")
-    tab1, tab2 = st.tabs([" Team Access", "🔑 Admin Login"])
+    tab1, tab2 = st.tabs(["👥 Team Access", "🔑 Admin Login"])
     with tab1:
         if st.button("Enter as Team"):
             st.session_state.logged_in = True; st.session_state.role = 'Team'
@@ -34,8 +44,8 @@ if 'logged_in' not in st.session_state or not st.session_state.logged_in:
 
 # --- 2. PAGE CONFIG ---
 st.set_page_config(page_title="Supply & CPD Tracker", layout="wide")
-st.title("📊 Supply & CPD Tracker App")
-if st.session_state.role == 'Admin': st.sidebar.success("🔑 Logged in as Admin")
+st.title(" Supply & CPD Tracker App")
+if st.session_state.role == 'Admin': st.sidebar.success(" Logged in as Admin")
 else: st.sidebar.info("👥 Logged in as Team Member")
 if st.sidebar.button("Logout"):
     st.session_state.logged_in = False; st.session_state.role = None
@@ -65,10 +75,9 @@ if db:
         data = [doc.to_dict() for doc in docs]
         if data:
             df = pd.DataFrame(data)
-            # ️ FIX: Safer date conversion
             if 'Supply Date' in df.columns:
                 df['Supply Date'] = pd.to_datetime(df['Supply Date'], errors='coerce')
-            elif 'Date' in df.columns: # If column is just named "Date"
+            elif 'Date' in df.columns: 
                 df = df.rename(columns={'Date': 'Supply Date'})
                 df['Supply Date'] = pd.to_datetime(df['Supply Date'], errors='coerce')
             
@@ -79,7 +88,7 @@ if db:
         st.warning(f"Database load issue: {e}")
 
 # --- 5. DATA INPUT ---
-st.sidebar.header(" Data Input")
+st.sidebar.header("📥 Data Input")
 input_method = st.sidebar.radio("How would you like to input data?", ("Manual Entry", "Upload Excel File"), horizontal=True)
 
 if input_method == "Manual Entry":
@@ -127,14 +136,11 @@ elif input_method == "Upload Excel File":
             else:
                 try:
                     if file_to_process.name.endswith('.csv'): temp_df = pd.read_csv(file_to_process)
-                    else: temp_df = pd.read_excel(file_to_process) # Reads first sheet by default
+                    else: temp_df = pd.read_excel(file_to_process) 
                     
-                    # 🛠️ FIX: Check if file is empty
                     if temp_df.empty:
-                        st.sidebar.error("❌ The file appears to be empty or data is not on the first sheet.")
+                        st.sidebar.error("❌ The file appears to be empty.")
                         st.stop()
-                    
-                    st.sidebar.info(f" Found {len(temp_df)} rows in file. Columns: {list(temp_df.columns)}")
                     
                     temp_df.columns = [str(c).strip() for c in temp_df.columns]
                     def find_col(keywords, exclude=None):
@@ -150,10 +156,8 @@ elif input_method == "Upload Excel File":
                     if find_col(['before', 'tank', '2']): rename_map[find_col(['before', 'tank', '2'])] = 'Qty before supply Tank 2'
                     if find_col(['suppl', 'tank', '2'], exclude=['before']): rename_map[find_col(['suppl', 'tank', '2'], exclude=['before'])] = 'QTY supplied Tank 2'
                     if find_col(['approved', 'cpd']): rename_map[find_col(['approved', 'cpd'])] = 'Approved CPD'
-                    # 🛠️ FIX: Look for 'date' OR 'supply date'
                     date_col = find_col(['supply', 'date']) or find_col(['date'])
                     if date_col: rename_map[date_col] = 'Supply Date'
-                    
                     if find_col(['site']): rename_map[find_col(['site'])] = 'Site ID'
                     if find_col(['region']): rename_map[find_col(['region'])] = 'Region'
                     if find_col(['cluster']): rename_map[find_col(['cluster'])] = 'Cluster'
@@ -180,13 +184,12 @@ elif input_method == "Upload Excel File":
                         zone_val = str(row.get('Zones', 'A1')).strip().upper()
                         supply_type_val = str(row.get('Type of supply', '1st supply')).strip()
                         
-                        try:
-                            q_b_t1 = float(row['Qty before supply Tank 1']) if pd.notnull(row['Qty before supply Tank 1']) else 0.0
-                            q_s_t1 = float(row['QTY supplied Tank 1']) if pd.notnull(row['QTY supplied Tank 1']) else 0.0
-                            q_b_t2 = float(row['Qty before supply Tank 2']) if pd.notnull(row['Qty before supply Tank 2']) else 0.0
-                            q_s_t2 = float(row['QTY supplied Tank 2']) if pd.notnull(row['QTY supplied Tank 2']) else 0.0
-                            cpd = float(row['Approved CPD']) if pd.notnull(row['Approved CPD']) else 0.0
-                        except: q_b_t1, q_s_t1, q_b_t2, q_s_t2, cpd = 0.0, 0.0, 0.0, 0.0, 0.0
+                        # ️ FIX 1: Use clean_numeric to fix Excel formatting issues
+                        q_b_t1 = clean_numeric(row['Qty before supply Tank 1'])
+                        q_s_t1 = clean_numeric(row['QTY supplied Tank 1'])
+                        q_b_t2 = clean_numeric(row['Qty before supply Tank 2'])
+                        q_s_t2 = clean_numeric(row['QTY supplied Tank 2'])
+                        cpd = clean_numeric(row['Approved CPD'])
 
                         record = {'Site ID': str(row['Site ID']), 'Region': str(row['Region']), 'Cluster': str(row['Cluster']), 'Zones': zone_val,
                                   'Qty before supply Tank 1': q_b_t1, 'QTY supplied Tank 1': q_s_t1,
@@ -202,7 +205,7 @@ elif input_method == "Upload Excel File":
                     del st.session_state['file_to_upload']
                     st.rerun()
                 except Exception as e:
-                    st.sidebar.error(f"❌ Upload failed: {str(e)}")
+                    st.sidebar.error(f" Upload failed: {str(e)}")
 
 # --- 6. ADMIN CONTROLS ---
 if st.session_state.role == 'Admin':
@@ -218,19 +221,27 @@ if st.session_state.role == 'Admin':
 if not df.empty:
     st.divider()
     if 'Supply Date' in df.columns and 'Site ID' in df.columns:
+        # Sort by Site and Date so the CPD calculation works chronologically
         df = df.sort_values(by=['Site ID', 'Supply Date'])
+        
+        # 🛠️ FIX 1 (Again): Ensure numbers are clean before doing math
         for col in ['Qty before supply Tank 1', 'QTY supplied Tank 1', 'Qty before supply Tank 2', 'QTY supplied Tank 2', 'Approved CPD']:
-            if col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+            if col in df.columns: 
+                df[col] = df[col].apply(clean_numeric)
 
         df['Total QTY Before Supply'] = df['Qty before supply Tank 1'] + df['Qty before supply Tank 2']
         df['Total QTY Supplied'] = df['QTY supplied Tank 1'] + df['QTY supplied Tank 2']
+        
+        # 🛠️ FIX 2: CPD Comparison Logic
         df['Prev_Total_Before'] = df.groupby('Site ID')['Total QTY Before Supply'].shift(1)
         df['Prev_Total_Supplied'] = df.groupby('Site ID')['Total QTY Supplied'].shift(1)
         df['Prev_Supply_Date'] = df.groupby('Site ID')['Supply Date'].shift(1)
         df['Days_Diff'] = (df['Supply Date'] - df['Prev_Supply_Date']).dt.days
+        
         df['Total_Consumed'] = (df['Prev_Total_Before'] + df['Prev_Total_Supplied']) - df['Total QTY Before Supply']
         df['Estimated CPD'] = df['Total_Consumed'] / df['Days_Diff']
         df['Estimated CPD'] = df['Estimated CPD'].where(df['Days_Diff'] > 0, 0) 
+        
         df['Total_QTY_After_Supply'] = df['Total QTY Before Supply'] + df['Total QTY Supplied']
         df['Days_Fuel_Last'] = df['Total_QTY_After_Supply'] / df['Estimated CPD']
         df['Days_Fuel_Last'] = df['Days_Fuel_Last'].where(df['Estimated CPD'] > 0, 0) 
@@ -248,13 +259,13 @@ if not df.empty:
         df['CPD Variance'] = df.apply(calc_variance, axis=1)
         
         def get_status(row):
-            if row['Estimated CPD'] == 0 or pd.isnull(row['Estimated CPD']): return " N/A"
+            if row['Estimated CPD'] == 0 or pd.isnull(row['Estimated CPD']): return "⚪ N/A"
             app = row['Approved CPD']; var = row['CPD Variance']
             if app == 0: return "⚪ N/A"
             pct = abs(var) / app
             if pct <= 0.05: return "🟢 On Target"
-            elif pct <= 0.15: return "🟡 Slight Variance"
-            else: return " High Variance"
+            elif pct <= 0.15: return " Slight Variance"
+            else: return "🔴 High Variance"
         df['Variance Status'] = df.apply(get_status, axis=1)
 
         today = pd.Timestamp.today().date()
@@ -262,13 +273,12 @@ if not df.empty:
             if pd.isnull(next_date): return ""
             days_diff = (next_date - today).days
             if days_diff < 0: return "🚨 OVERDUE"
-            elif days_diff == 0: return " CRITICAL: Supply Today"
-            elif days_diff <= 2: return f"🟡 WARNING: Supply in {days_diff} days"
+            elif days_diff == 0: return "🔴 CRITICAL: Supply Today"
+            elif days_diff <= 2: return f" WARNING: Supply in {days_diff} days"
             else: return ""
         df['Supply Alert'] = df['Estimated Next Supply Date'].apply(get_supply_alert)
 
     st.sidebar.header("🔍 Filters")
-    # 🛠️ FIX: Handle case where dates might be NaT
     valid_dates = df['Supply Date'].dropna()
     if not valid_dates.empty:
         min_date = valid_dates.min().date(); max_date = valid_dates.max().date()
@@ -299,7 +309,7 @@ if not df.empty:
 
     if filtered_df.empty: st.warning("No data found for the selected filters.")
     else:
-        st.subheader(" Summary Dashboard")
+        st.subheader("📊 Summary Dashboard")
         total_sites = filtered_df['Site ID'].nunique()
         total_supplied = filtered_df['Total QTY Supplied'].sum()
         high_variance_count = (filtered_df['Variance Status'] == '🔴 High Variance').sum()
@@ -313,7 +323,7 @@ if not df.empty:
         col5.metric("Urgent Supplies", urgent_supplies)
         st.markdown("---")
 
-        st.subheader("📍 Sites by Zone")
+        st.subheader(" Sites by Zone")
         if 'Zones' in filtered_df.columns:
             z1, z2, z3 = st.columns(3)
             with z1: st.metric("Zone A1", filtered_df[filtered_df['Zones'] == 'A1']['Site ID'].nunique())
@@ -338,7 +348,7 @@ if not df.empty:
             st.subheader("Variance Status Distribution")
             status_counts = filtered_df['Variance Status'].value_counts().reset_index()
             status_counts.columns = ['Status', 'Count']
-            color_map = {'🟢 On Target': '#28a745', '🟡 Slight Variance': '#ffc107', '🔴 High Variance': '#dc3545', ' N/A': '#6c757d'}
+            color_map = {' On Target': '#28a745', '🟡 Slight Variance': '#ffc107', '🔴 High Variance': '#dc3545', '⚪ N/A': '#6c757d'}
             fig = px.bar(status_counts, x='Status', y='Count', color='Status', color_discrete_map=color_map, text='Count')
             fig.update_layout(showlegend=False, yaxis_title='Count', xaxis_title='')
             st.plotly_chart(fig, use_container_width=True)
@@ -349,4 +359,4 @@ if not df.empty:
         st.dataframe(filtered_df[final_cols], width="stretch", hide_index=True)
 
 else:
-    st.info(" Database is empty. Use the sidebar to upload an Excel file!")
+    st.info("👆 Database is empty. Use the sidebar to upload an Excel file!")
