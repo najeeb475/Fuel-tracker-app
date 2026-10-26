@@ -11,7 +11,7 @@ from streamlit_cookies_controller import CookieController
 def clean_numeric(val):
     """Converts messy Excel text (like '1,000' or '500 L') to a clean float."""
     if pd.isnull(val): return 0.0
-    val_str = str(val).replace(',', '').replace(' ', '').replace('L', '').replace('l', '')
+    val_str = str(val).replace(',', '').replace(' ', '').replace('L', '').replace('l', '').replace('ltr', '')
     try: 
         return float(val_str)
     except: 
@@ -75,15 +75,27 @@ if db:
         data = [doc.to_dict() for doc in docs]
         if data:
             df = pd.DataFrame(data)
+            
+            # ️ FIX: Convert Date
             if 'Supply Date' in df.columns:
                 df['Supply Date'] = pd.to_datetime(df['Supply Date'], errors='coerce')
             elif 'Date' in df.columns: 
                 df = df.rename(columns={'Date': 'Supply Date'})
                 df['Supply Date'] = pd.to_datetime(df['Supply Date'], errors='coerce')
             
+            # 🛠️ FIX: Clean Numbers immediately upon loading
+            num_cols = ['Qty before supply Tank 1', 'QTY supplied Tank 1', 'Qty before supply Tank 2', 'QTY supplied Tank 2', 'Approved CPD']
+            for col in num_cols:
+                if col in df.columns:
+                    df[col] = df[col].apply(clean_numeric)
+
+            # ️ FIX: Remove exact duplicates (same site, same date) caused by multiple uploads
+            if 'Site ID' in df.columns and 'Supply Date' in df.columns:
+                df = df.drop_duplicates(subset=['Site ID', 'Supply Date'], keep='last')
+                
             if not df.empty:
                 if 'Zones' in df.columns: df['Zones'] = df['Zones'].astype(str).str.strip().str.upper()
-                st.sidebar.info(f"📊 Loaded {len(df)} records from database.")
+                st.sidebar.info(f"📊 Loaded {len(df)} unique records from database.")
     except Exception as e:
         st.warning(f"Database load issue: {e}")
 
@@ -106,7 +118,7 @@ if input_method == "Manual Entry":
             approved_cpd = st.number_input("Approved CPD", min_value=0.0, format="%.2f")
             supply_date = st.date_input("Supply Date"); bobtail = st.text_input("Bobtail number")
             supply_type = st.text_input("Type of supply", value="Oct 1st supply")
-        submitted = st.form_submit_button("💾 Save to Database")
+        submitted = st.form_submit_button(" Save to Database")
         if submitted:
             if not site_id: st.error("Please enter a Site ID.")
             elif not db: st.error("Database not connected.")
@@ -184,7 +196,7 @@ elif input_method == "Upload Excel File":
                         zone_val = str(row.get('Zones', 'A1')).strip().upper()
                         supply_type_val = str(row.get('Type of supply', '1st supply')).strip()
                         
-                        # ️ FIX 1: Use clean_numeric to fix Excel formatting issues
+                        # ️ FIX: Use clean_numeric for upload
                         q_b_t1 = clean_numeric(row['Qty before supply Tank 1'])
                         q_s_t1 = clean_numeric(row['QTY supplied Tank 1'])
                         q_b_t2 = clean_numeric(row['Qty before supply Tank 2'])
@@ -205,7 +217,7 @@ elif input_method == "Upload Excel File":
                     del st.session_state['file_to_upload']
                     st.rerun()
                 except Exception as e:
-                    st.sidebar.error(f" Upload failed: {str(e)}")
+                    st.sidebar.error(f"❌ Upload failed: {str(e)}")
 
 # --- 6. ADMIN CONTROLS ---
 if st.session_state.role == 'Admin':
@@ -224,15 +236,11 @@ if not df.empty:
         # Sort by Site and Date so the CPD calculation works chronologically
         df = df.sort_values(by=['Site ID', 'Supply Date'])
         
-        # 🛠️ FIX 1 (Again): Ensure numbers are clean before doing math
-        for col in ['Qty before supply Tank 1', 'QTY supplied Tank 1', 'Qty before supply Tank 2', 'QTY supplied Tank 2', 'Approved CPD']:
-            if col in df.columns: 
-                df[col] = df[col].apply(clean_numeric)
-
-        df['Total QTY Before Supply'] = df['Qty before supply Tank 1'] + df['Qty before supply Tank 2']
+        # 🛠️ FIX: Explicitly calculate Total QTY Supplied (Tank 1 + Tank 2)
         df['Total QTY Supplied'] = df['QTY supplied Tank 1'] + df['QTY supplied Tank 2']
+        df['Total QTY Before Supply'] = df['Qty before supply Tank 1'] + df['Qty before supply Tank 2']
         
-        # 🛠️ FIX 2: CPD Comparison Logic
+        # 🛠️ FIX: CPD Comparison Logic (Uses History)
         df['Prev_Total_Before'] = df.groupby('Site ID')['Total QTY Before Supply'].shift(1)
         df['Prev_Total_Supplied'] = df.groupby('Site ID')['Total QTY Supplied'].shift(1)
         df['Prev_Supply_Date'] = df.groupby('Site ID')['Supply Date'].shift(1)
@@ -263,8 +271,8 @@ if not df.empty:
             app = row['Approved CPD']; var = row['CPD Variance']
             if app == 0: return "⚪ N/A"
             pct = abs(var) / app
-            if pct <= 0.05: return "🟢 On Target"
-            elif pct <= 0.15: return " Slight Variance"
+            if pct <= 0.05: return " On Target"
+            elif pct <= 0.15: return "🟡 Slight Variance"
             else: return "🔴 High Variance"
         df['Variance Status'] = df.apply(get_status, axis=1)
 
@@ -274,7 +282,7 @@ if not df.empty:
             days_diff = (next_date - today).days
             if days_diff < 0: return "🚨 OVERDUE"
             elif days_diff == 0: return "🔴 CRITICAL: Supply Today"
-            elif days_diff <= 2: return f" WARNING: Supply in {days_diff} days"
+            elif days_diff <= 2: return f"🟡 WARNING: Supply in {days_diff} days"
             else: return ""
         df['Supply Alert'] = df['Estimated Next Supply Date'].apply(get_supply_alert)
 
@@ -323,7 +331,7 @@ if not df.empty:
         col5.metric("Urgent Supplies", urgent_supplies)
         st.markdown("---")
 
-        st.subheader(" Sites by Zone")
+        st.subheader("📍 Sites by Zone")
         if 'Zones' in filtered_df.columns:
             z1, z2, z3 = st.columns(3)
             with z1: st.metric("Zone A1", filtered_df[filtered_df['Zones'] == 'A1']['Site ID'].nunique())
@@ -348,15 +356,19 @@ if not df.empty:
             st.subheader("Variance Status Distribution")
             status_counts = filtered_df['Variance Status'].value_counts().reset_index()
             status_counts.columns = ['Status', 'Count']
-            color_map = {' On Target': '#28a745', '🟡 Slight Variance': '#ffc107', '🔴 High Variance': '#dc3545', '⚪ N/A': '#6c757d'}
+            color_map = {'🟢 On Target': '#28a745', '🟡 Slight Variance': '#ffc107', ' High Variance': '#dc3545', '⚪ N/A': '#6c757d'}
             fig = px.bar(status_counts, x='Status', y='Count', color='Status', color_discrete_map=color_map, text='Count')
             fig.update_layout(showlegend=False, yaxis_title='Count', xaxis_title='')
             st.plotly_chart(fig, use_container_width=True)
 
-        st.subheader("📋 Detailed Data")
+        st.subheader("📋 Detailed Data (Latest Status per Site)")
+        # 🛠️ FIX: Show only ONE LINE per site (the latest record) in the table
+        # We sort by date and keep the last occurrence of each Site ID
+        df_latest = filtered_df.sort_values('Supply Date').drop_duplicates(subset=['Site ID'], keep='last')
+        
         display_cols = ['Site ID', 'Region', 'Cluster', 'Zones', 'Type of supply', 'Total QTY Supplied', 'Total QTY Before Supply', 'Approved CPD', 'Estimated CPD', 'CPD Variance', 'Variance Status', 'Supply Date', 'Estimated Next Supply Date', 'Supply Alert', 'Bobtail number']
-        final_cols = [c for c in display_cols if c in filtered_df.columns]
-        st.dataframe(filtered_df[final_cols], width="stretch", hide_index=True)
+        final_cols = [c for c in display_cols if c in df_latest.columns]
+        st.dataframe(df_latest[final_cols], width="stretch", hide_index=True)
 
 else:
     st.info("👆 Database is empty. Use the sidebar to upload an Excel file!")
