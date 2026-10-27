@@ -27,8 +27,8 @@ elif 'logged_in' not in st.session_state:
 
 # If not logged in, show the login portal
 if not st.session_state.get('logged_in', False):
-    st.title(" Access Portal")
-    tab1, tab2 = st.tabs(["👥 Team Access", " Admin Login"])
+    st.title("🔒 Access Portal")
+    tab1, tab2 = st.tabs(["👥 Team Access", "🔑 Admin Login"])
     with tab1:
         if st.button("Enter as Team"):
             st.session_state.logged_in = True
@@ -105,7 +105,7 @@ if db:
                 
             if not df.empty:
                 if 'Zones' in df.columns: df['Zones'] = df['Zones'].astype(str).str.strip().str.upper()
-                st.sidebar.info(f"📊 Loaded {len(df)} unique records from database.")
+                st.sidebar.info(f" Loaded {len(df)} unique records from database.")
     except Exception as e:
         st.warning(f"Database load issue: {e}")
 
@@ -158,7 +158,7 @@ if input_method == "Manual Entry":
                 st.success("✅ Saved successfully!"); st.rerun()
 
 elif input_method == "Edit Single Record":
-    st.sidebar.subheader("✏️ Edit / Update Single Record")
+    st.sidebar.subheader("️ Edit / Update Single Record")
     if not df.empty and 'Site ID' in df.columns:
         edit_site = st.sidebar.selectbox("1. Select Site ID", sorted([str(s) for s in df['Site ID'].unique().tolist()]))
         site_dates = df[df['Site ID'] == edit_site]['Supply Date'].sort_values(ascending=False)
@@ -209,7 +209,7 @@ elif input_method == "Bulk Edit (Spreadsheet)":
             
             edited_df = st.data_editor(bulk_df[cols_to_show], num_rows="fixed", use_container_width=True, key="bulk_editor")
             
-            if st.button("💾 Save All Changes to Database", type="primary"):
+            if st.button(" Save All Changes to Database", type="primary"):
                 count = 0
                 for idx in edited_df.index:
                     doc_id = bulk_df.loc[idx, 'doc_id']
@@ -328,15 +328,18 @@ if not df.empty:
             if row['Estimated CPD'] == 0 or pd.isnull(row['Estimated CPD']): return 0
             return row['Approved CPD'] - row['Estimated CPD']
         df['CPD Variance'] = df.apply(calc_variance, axis=1)
+        
+        # 🛠️ FIX: Restored emojis in status logic
         def get_status(row):
             if row['Estimated CPD'] == 0 or pd.isnull(row['Estimated CPD']): return "⚪ N/A"
             app = row['Approved CPD']; var = row['CPD Variance']
-            if app == 0: return " N/A"
+            if app == 0: return "⚪ N/A"
             pct = abs(var) / app
-            if pct <= 0.05: return "🟢 On Target"
-            elif pct <= 0.15: return " Slight Variance"
+            if pct <= 0.05: return " On Target"
+            elif pct <= 0.15: return "🟡 Slight Variance"
             else: return "🔴 High Variance"
         df['Variance Status'] = df.apply(get_status, axis=1)
+        
         today = pd.Timestamp.today().date()
         def get_supply_alert(next_date):
             if pd.isnull(next_date): return ""
@@ -381,8 +384,12 @@ if not df.empty:
         st.subheader("📊 Summary Dashboard")
         total_sites = filtered_df['Site ID'].nunique()
         total_supplied = filtered_df['Total QTY Supplied'].sum()
+        
+        # 🛠️ FIX: Restored emoji in counting logic
         high_variance_count = (filtered_df['Variance Status'] == ' High Variance').sum()
+        
         urgent_supplies = filtered_df['Supply Alert'].apply(lambda x: 1 if 'CRITICAL' in str(x) or 'WARNING' in str(x) or 'OVERDUE' in str(x) else 0).sum()
+        
         col1, col2, col3, col4, col5 = st.columns(5)
         col1.metric("Total Sites Tracked", total_sites)
         col2.metric("Sites Supplied in Range", total_sites)
@@ -397,7 +404,7 @@ if not df.empty:
             with z2: st.metric("Zone A2", filtered_df[filtered_df['Zones'] == 'A2']['Site ID'].nunique())
             with z3: st.metric("Zone A3", filtered_df[filtered_df['Zones'] == 'A3']['Site ID'].nunique())
         st.markdown("---")
-        st.subheader(" Sites by Supply Type")
+        st.subheader("🚛 Sites by Supply Type")
         if 'Type of supply' in filtered_df.columns:
             supply_counts = filtered_df.groupby('Type of supply')['Site ID'].nunique().sort_values(ascending=False)
             if len(supply_counts) > 0:
@@ -413,7 +420,7 @@ if not df.empty:
             st.subheader("Variance Status Distribution")
             status_counts = filtered_df['Variance Status'].value_counts().reset_index()
             status_counts.columns = ['Status', 'Count']
-            color_map = {'🟢 On Target': '#28a745', '🟡 Slight Variance': '#ffc107', '🔴 High Variance': '#dc3545', '⚪ N/A': '#6c757d'}
+            color_map = {'🟢 On Target': '#28a745', '🟡 Slight Variance': '#ffc107', '🔴 High Variance': '#dc3545', ' N/A': '#6c757d'}
             fig = px.bar(status_counts, x='Status', y='Count', color='Status', color_discrete_map=color_map, text='Count')
             fig.update_layout(showlegend=False, yaxis_title='Count', xaxis_title='')
             st.plotly_chart(fig, use_container_width=True)
@@ -431,11 +438,10 @@ if not df.empty:
                 fig_hist = px.line(chart_data, x='Supply Date', y='Value', color='CPD Type', markers=True, title=f'CPD History for {history_site}')
                 st.plotly_chart(fig_hist, use_container_width=True)
         st.markdown("---")
-        st.subheader(" Current Status (Latest Record per Site)")
+        st.subheader("📋 Current Status (Latest Record per Site)")
         df_latest = filtered_df.sort_values('Supply Date').drop_duplicates(subset=['Site ID'], keep='last')
         display_cols = ['Site ID', 'Region', 'Cluster', 'Zones', 'Type of supply', 'Total QTY Supplied', 'Total QTY Before Supply', 'Approved CPD', 'Estimated CPD', 'CPD Variance', 'Variance Status', 'Supply Date', 'Estimated Next Supply Date', 'Supply Alert', 'Bobtail number']
         final_cols = [c for c in display_cols if c in df_latest.columns]
         st.dataframe(df_latest[final_cols], width="stretch", hide_index=True)
 else:
     st.info("👆 Database is empty. Use the sidebar to upload an Excel file or add manual entries!")
-      
