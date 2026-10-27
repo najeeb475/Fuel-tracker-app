@@ -14,7 +14,7 @@ def clean_numeric(val):
     try: return float(val_str)
     except: return 0.0
 
-# --- 1. SECURITY & LOGIN (FIXED) ---
+# --- 1. SECURITY & LOGIN ---
 controller = CookieController()
 cookie_expiry = datetime.now() + timedelta(days=30)
 
@@ -85,6 +85,11 @@ if db:
             
         if data:
             df = pd.DataFrame(data)
+            
+            # 🛠️ FIX: Force Site ID to be string to prevent index errors
+            if 'Site ID' in df.columns:
+                df['Site ID'] = df['Site ID'].astype(str).str.strip()
+
             if 'Supply Date' in df.columns:
                 df['Supply Date'] = pd.to_datetime(df['Supply Date'], errors='coerce')
             elif 'Date' in df.columns: 
@@ -113,18 +118,25 @@ if input_method == "Manual Entry":
     st.sidebar.subheader("Enter Supply Details")
     with st.sidebar.form("manual_entry_form"):
         if not df.empty and 'Site ID' in df.columns:
-            existing_sites = sorted([str(s) for s in df['Site ID'].dropna().unique().tolist()])
-            site_choice = st.selectbox("Select Site", [" New Site"] + existing_sites)
+            existing_sites = sorted(df['Site ID'].dropna().unique().tolist())
+            site_choice = st.selectbox("Select Site", ["➕ New Site"] + existing_sites)
+            
             if site_choice == "➕ New Site":
                 site_id = st.text_input("New Site ID")
                 region = st.text_input("Region"); cluster = st.text_input("Cluster")
                 zone = st.selectbox("Zones", ["A1", "A2", "A3"])
             else:
                 site_id = site_choice
-                last_record = df[df['Site ID'] == site_id].sort_values('Supply Date').iloc[-1]
-                region = last_record.get('Region', ''); cluster = last_record.get('Cluster', '')
-                zone = last_record.get('Zones', 'A1')
-                st.success(f"Updating existing site: {site_id}")
+                # 🛠️ FIX: Safe lookup with empty check
+                site_df = df[df['Site ID'] == str(site_id)]
+                if not site_df.empty:
+                    last_record = site_df.sort_values('Supply Date').iloc[-1]
+                    region = last_record.get('Region', '')
+                    cluster = last_record.get('Cluster', '')
+                    zone = last_record.get('Zones', 'A1')
+                    st.success(f"Updating existing site: {site_id}")
+                else:
+                    region = ''; cluster = ''; zone = 'A1'
         else:
             site_id = st.text_input("Site ID"); region = st.text_input("Region")
             cluster = st.text_input("Cluster"); zone = st.selectbox("Zones", ["A1", "A2", "A3"])
@@ -156,34 +168,40 @@ if input_method == "Manual Entry":
 elif input_method == "Edit Single Record":
     st.sidebar.subheader("✏️ Edit / Update Single Record")
     if not df.empty and 'Site ID' in df.columns:
-        edit_site = st.sidebar.selectbox("1. Select Site ID", sorted([str(s) for s in df['Site ID'].unique().tolist()]))
+        edit_site = st.sidebar.selectbox("1. Select Site ID", sorted(df['Site ID'].unique().tolist()))
         site_dates = df[df['Site ID'] == edit_site]['Supply Date'].sort_values(ascending=False)
         date_options = [d.strftime('%Y-%m-%d') for d in site_dates]
         edit_date_str = st.sidebar.selectbox("2. Select Date to Edit", date_options)
-        row_data = df[(df['Site ID'] == edit_site) & (df['Supply Date'].astype(str) == edit_date_str)].iloc[0]
-        doc_id = row_data['doc_id']
-        st.sidebar.info(f"Editing record ID: {doc_id[:8]}...")
-        with st.sidebar.form("edit_form"):
-            st.markdown("**Update Values:**")
-            new_cpd = st.number_input("Approved CPD", value=float(row_data.get('Approved CPD', 0.0)), format="%.2f")
-            new_q_b_t1 = st.number_input("Qty before supply Tank 1", value=float(row_data.get('Qty before supply Tank 1', 0.0)), format="%.2f")
-            new_q_s_t1 = st.number_input("QTY supplied Tank 1", value=float(row_data.get('QTY supplied Tank 1', 0.0)), format="%.2f")
-            new_q_b_t2 = st.number_input("Qty before supply Tank 2", value=float(row_data.get('Qty before supply Tank 2', 0.0)), format="%.2f")
-            new_q_s_t2 = st.number_input("QTY supplied Tank 2", value=float(row_data.get('QTY supplied Tank 2', 0.0)), format="%.2f")
-            new_bobtail = st.text_input("Bobtail number", value=str(row_data.get('Bobtail number', '')))
-            new_type = st.text_input("Type of supply", value=str(row_data.get('Type of supply', '')))
-            col_btn1, col_btn2 = st.columns(2)
-            with col_btn1: save_changes = st.form_submit_button("✅ Save", type="primary")
-            with col_btn2: delete_record = st.form_submit_button("🗑️ Delete", type="secondary")
-        if save_changes:
-            update_data = {'Approved CPD': float(new_cpd), 'Qty before supply Tank 1': float(new_q_b_t1), 'QTY supplied Tank 1': float(new_q_s_t1),
-                           'Qty before supply Tank 2': float(new_q_b_t2), 'QTY supplied Tank 2': float(new_q_s_t2),
-                           'Bobtail number': str(new_bobtail), 'Type of supply': str(new_type)}
-            db.collection('supplies').document(doc_id).update(update_data)
-            st.sidebar.success("✅ Record updated!"); st.rerun()
-        if delete_record:
-            db.collection('supplies').document(doc_id).delete()
-            st.sidebar.success("️ Record deleted!"); st.rerun()
+        
+        # 🛠️ FIX: Safe lookup for edit form
+        row_data_df = df[(df['Site ID'] == str(edit_site)) & (df['Supply Date'].astype(str) == edit_date_str)]
+        if not row_data_df.empty:
+            row_data = row_data_df.iloc[0]
+            doc_id = row_data['doc_id']
+            st.sidebar.info(f"Editing record ID: {doc_id[:8]}...")
+            with st.sidebar.form("edit_form"):
+                st.markdown("**Update Values:**")
+                new_cpd = st.number_input("Approved CPD", value=float(row_data.get('Approved CPD', 0.0)), format="%.2f")
+                new_q_b_t1 = st.number_input("Qty before supply Tank 1", value=float(row_data.get('Qty before supply Tank 1', 0.0)), format="%.2f")
+                new_q_s_t1 = st.number_input("QTY supplied Tank 1", value=float(row_data.get('QTY supplied Tank 1', 0.0)), format="%.2f")
+                new_q_b_t2 = st.number_input("Qty before supply Tank 2", value=float(row_data.get('Qty before supply Tank 2', 0.0)), format="%.2f")
+                new_q_s_t2 = st.number_input("QTY supplied Tank 2", value=float(row_data.get('QTY supplied Tank 2', 0.0)), format="%.2f")
+                new_bobtail = st.text_input("Bobtail number", value=str(row_data.get('Bobtail number', '')))
+                new_type = st.text_input("Type of supply", value=str(row_data.get('Type of supply', '')))
+                col_btn1, col_btn2 = st.columns(2)
+                with col_btn1: save_changes = st.form_submit_button("✅ Save", type="primary")
+                with col_btn2: delete_record = st.form_submit_button("🗑️ Delete", type="secondary")
+            if save_changes:
+                update_data = {'Approved CPD': float(new_cpd), 'Qty before supply Tank 1': float(new_q_b_t1), 'QTY supplied Tank 1': float(new_q_s_t1),
+                               'Qty before supply Tank 2': float(new_q_b_t2), 'QTY supplied Tank 2': float(new_q_s_t2),
+                               'Bobtail number': str(new_bobtail), 'Type of supply': str(new_type)}
+                db.collection('supplies').document(doc_id).update(update_data)
+                st.sidebar.success("✅ Record updated!"); st.rerun()
+            if delete_record:
+                db.collection('supplies').document(doc_id).delete()
+                st.sidebar.success("🗑️ Record deleted!"); st.rerun()
+        else:
+            st.sidebar.warning("Could not find this specific record.")
     else: st.sidebar.warning("No data available to edit.")
 
 elif input_method == "Bulk Edit (Spreadsheet)":
@@ -233,7 +251,7 @@ elif input_method == "Upload Excel File":
         st.session_state['file_to_upload'] = uploaded_file
         st.sidebar.success(f"✅ File '{uploaded_file.name}' is ready.")
     if 'file_to_upload' in st.session_state:
-        if st.sidebar.button(" CLICK HERE TO UPLOAD DATA TO DASHBOARD", type="primary"):
+        if st.sidebar.button("🚀 CLICK HERE TO UPLOAD DATA TO DASHBOARD", type="primary"):
             file_to_process = st.session_state['file_to_upload']
             if not db: st.sidebar.error("❌ Database not connected.")
             else:
@@ -285,12 +303,12 @@ elif input_method == "Upload Excel File":
                         db.collection('supplies').add(record)
                         count += 1; progress_val = min(count / total_rows, 1.0); progress_bar.progress(progress_val)
                     st.sidebar.success(f"✅ Successfully uploaded {count} rows!"); del st.session_state['file_to_upload']; st.rerun()
-                except Exception as e: st.sidebar.error(f" Upload failed: {str(e)}")
+                except Exception as e: st.sidebar.error(f"❌ Upload failed: {str(e)}")
 
 # --- 6. ADMIN CONTROLS ---
 if st.session_state.role == 'Admin':
     st.sidebar.markdown("---")
-    st.sidebar.subheader("🔑 Admin Controls")
+    st.sidebar.subheader(" Admin Controls")
     if st.sidebar.button("🗑️ Clear Database"): 
         if st.sidebar.checkbox("Are you sure?"):
             docs = db.collection('supplies').stream()
@@ -330,7 +348,7 @@ if not df.empty:
             app = row['Approved CPD']; var = row['CPD Variance']
             if app == 0: return "⚪ N/A"
             pct = abs(var) / app
-            if pct <= 0.05: return "🟢 On Target"
+            if pct <= 0.05: return " On Target"
             elif pct <= 0.15: return "🟡 Slight Variance"
             else: return "🔴 High Variance"
         df['Variance Status'] = df.apply(get_status, axis=1)
@@ -376,7 +394,7 @@ if not df.empty:
 
     if filtered_df.empty: st.warning("No data found for the selected filters.")
     else:
-        st.subheader(" Summary Dashboard")
+        st.subheader("📊 Summary Dashboard")
         total_sites = filtered_df['Site ID'].nunique()
         total_supplied = filtered_df['Total QTY Supplied'].sum()
         
@@ -415,15 +433,15 @@ if not df.empty:
             st.subheader("Variance Status Distribution")
             status_counts = filtered_df['Variance Status'].value_counts().reset_index()
             status_counts.columns = ['Status', 'Count']
-            color_map = {'🟢 On Target': '#28a745', '🟡 Slight Variance': '#ffc107', ' High Variance': '#dc3545', '⚪ N/A': '#6c757d'}
+            color_map = {'🟢 On Target': '#28a745', ' Slight Variance': '#ffc107', '🔴 High Variance': '#dc3545', '⚪ N/A': '#6c757d'}
             fig = px.bar(status_counts, x='Status', y='Count', color='Status', color_discrete_map=color_map, text='Count')
             fig.update_layout(showlegend=False, yaxis_title='Count', xaxis_title='')
             st.plotly_chart(fig, use_container_width=True)
         st.markdown("---")
-        st.subheader("📜 Site History & CPD Trend")
+        st.subheader(" Site History & CPD Trend")
         st.write("Select a site below to see its Estimated CPD history across all months.")
         if 'Site ID' in df.columns:
-            history_site = st.selectbox("Select Site ID to view history:", sorted([str(s) for s in df['Site ID'].unique().tolist()]))
+            history_site = st.selectbox("Select Site ID to view history:", sorted(df['Site ID'].unique().tolist()))
             site_hist_df = df[df['Site ID'] == history_site].sort_values('Supply Date')
             hist_cols = ['Supply Date', 'Type of supply', 'Total QTY Supplied', 'Estimated CPD', 'Approved CPD', 'CPD Variance', 'Variance Status']
             final_hist_cols = [c for c in hist_cols if c in site_hist_df.columns]
@@ -439,4 +457,4 @@ if not df.empty:
         final_cols = [c for c in display_cols if c in df_latest.columns]
         st.dataframe(df_latest[final_cols], width="stretch", hide_index=True)
 else:
-    st.info(" Database is empty. Use the sidebar to upload an Excel file or add manual entries!")
+    st.info("👆 Database is empty. Use the sidebar to upload an Excel file or add manual entries!")
