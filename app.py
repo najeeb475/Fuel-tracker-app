@@ -14,27 +14,36 @@ def clean_numeric(val):
     try: return float(val_str)
     except: return 0.0
 
-# --- 1. SECURITY & LOGIN ---
+# --- 1. SECURITY & LOGIN (FIXED FOR REFRESH) ---
 controller = CookieController()
-if 'logged_in' not in st.session_state:
-    if controller.get('logged_in') == 'true':
-        st.session_state.logged_in = True
-        st.session_state.role = controller.get('role')
 
-if 'logged_in' not in st.session_state or not st.session_state.logged_in:
-    st.title("🔒 Access Portal")
-    tab1, tab2 = st.tabs(["👥 Team Access", "🔑 Admin Login"])
+# 🛠️ FIX: Check cookies FIRST to survive hard refreshes (F5)
+cookie_status = controller.get('logged_in')
+if cookie_status == 'true':
+    st.session_state.logged_in = True
+    st.session_state.role = controller.get('role')
+elif 'logged_in' not in st.session_state:
+    st.session_state.logged_in = False
+
+# If not logged in, show the login portal
+if not st.session_state.get('logged_in', False):
+    st.title(" Access Portal")
+    tab1, tab2 = st.tabs(["👥 Team Access", " Admin Login"])
     with tab1:
         if st.button("Enter as Team"):
-            st.session_state.logged_in = True; st.session_state.role = 'Team'
-            controller.set('logged_in', 'true'); controller.set('role', 'Team')
+            st.session_state.logged_in = True
+            st.session_state.role = 'Team'
+            controller.set('logged_in', 'true')
+            controller.set('role', 'Team')
             st.rerun()
     with tab2:
         password = st.text_input("Enter Admin Password", type="password")
         if st.button("Login as Admin"):
             if password == "admin123": 
-                st.session_state.logged_in = True; st.session_state.role = 'Admin'
-                controller.set('logged_in', 'true'); controller.set('role', 'Admin')
+                st.session_state.logged_in = True
+                st.session_state.role = 'Admin'
+                controller.set('logged_in', 'true')
+                controller.set('role', 'Admin')
                 st.rerun()
             else: st.error("Incorrect password.")
     st.stop()
@@ -44,9 +53,12 @@ st.set_page_config(page_title="Supply & CPD Tracker", layout="wide")
 st.title("📊 Supply & CPD Tracker App")
 if st.session_state.role == 'Admin': st.sidebar.success("🔑 Logged in as Admin")
 else: st.sidebar.info("👥 Logged in as Team Member")
+
 if st.sidebar.button("Logout"):
-    st.session_state.logged_in = False; st.session_state.role = None
-    controller.remove('logged_in'); controller.remove('role')
+    st.session_state.logged_in = False
+    st.session_state.role = None
+    controller.remove('logged_in')
+    controller.remove('role')
     st.rerun()
 
 # --- 3. FIREBASE CONNECTION ---
@@ -178,7 +190,6 @@ elif input_method == "Edit Single Record":
             st.sidebar.success("🗑️ Record deleted!"); st.rerun()
     else: st.sidebar.warning("No data available to edit.")
 
-# 🛠️ NEW FEATURE: BULK EDIT (SPREADSHEET VIEW)
 elif input_method == "Bulk Edit (Spreadsheet)":
     st.sidebar.subheader("✏️ Bulk Update Records")
     st.sidebar.write("Select a date to edit all sites for that month in a spreadsheet view.")
@@ -200,7 +211,6 @@ elif input_method == "Bulk Edit (Spreadsheet)":
             
             if st.button("💾 Save All Changes to Database", type="primary"):
                 count = 0
-                # We iterate through the original index to map back to the Firebase doc_id
                 for idx in edited_df.index:
                     doc_id = bulk_df.loc[idx, 'doc_id']
                     update_data = {}
@@ -227,7 +237,7 @@ elif input_method == "Upload Excel File":
         st.session_state['file_to_upload'] = uploaded_file
         st.sidebar.success(f"✅ File '{uploaded_file.name}' is ready.")
     if 'file_to_upload' in st.session_state:
-        if st.sidebar.button(" CLICK HERE TO UPLOAD DATA TO DASHBOARD", type="primary"):
+        if st.sidebar.button("🚀 CLICK HERE TO UPLOAD DATA TO DASHBOARD", type="primary"):
             file_to_process = st.session_state['file_to_upload']
             if not db: st.sidebar.error("❌ Database not connected.")
             else:
@@ -321,10 +331,10 @@ if not df.empty:
         def get_status(row):
             if row['Estimated CPD'] == 0 or pd.isnull(row['Estimated CPD']): return "⚪ N/A"
             app = row['Approved CPD']; var = row['CPD Variance']
-            if app == 0: return "⚪ N/A"
+            if app == 0: return " N/A"
             pct = abs(var) / app
             if pct <= 0.05: return "🟢 On Target"
-            elif pct <= 0.15: return "🟡 Slight Variance"
+            elif pct <= 0.15: return " Slight Variance"
             else: return "🔴 High Variance"
         df['Variance Status'] = df.apply(get_status, axis=1)
         today = pd.Timestamp.today().date()
@@ -371,7 +381,7 @@ if not df.empty:
         st.subheader("📊 Summary Dashboard")
         total_sites = filtered_df['Site ID'].nunique()
         total_supplied = filtered_df['Total QTY Supplied'].sum()
-        high_variance_count = (filtered_df['Variance Status'] == '🔴 High Variance').sum()
+        high_variance_count = (filtered_df['Variance Status'] == ' High Variance').sum()
         urgent_supplies = filtered_df['Supply Alert'].apply(lambda x: 1 if 'CRITICAL' in str(x) or 'WARNING' in str(x) or 'OVERDUE' in str(x) else 0).sum()
         col1, col2, col3, col4, col5 = st.columns(5)
         col1.metric("Total Sites Tracked", total_sites)
@@ -380,14 +390,14 @@ if not df.empty:
         col4.metric("High Variance Sites", high_variance_count)
         col5.metric("Urgent Supplies", urgent_supplies)
         st.markdown("---")
-        st.subheader(" Sites by Zone")
+        st.subheader("📍 Sites by Zone")
         if 'Zones' in filtered_df.columns:
             z1, z2, z3 = st.columns(3)
             with z1: st.metric("Zone A1", filtered_df[filtered_df['Zones'] == 'A1']['Site ID'].nunique())
             with z2: st.metric("Zone A2", filtered_df[filtered_df['Zones'] == 'A2']['Site ID'].nunique())
             with z3: st.metric("Zone A3", filtered_df[filtered_df['Zones'] == 'A3']['Site ID'].nunique())
         st.markdown("---")
-        st.subheader("🚛 Sites by Supply Type")
+        st.subheader(" Sites by Supply Type")
         if 'Type of supply' in filtered_df.columns:
             supply_counts = filtered_df.groupby('Type of supply')['Site ID'].nunique().sort_values(ascending=False)
             if len(supply_counts) > 0:
@@ -421,10 +431,11 @@ if not df.empty:
                 fig_hist = px.line(chart_data, x='Supply Date', y='Value', color='CPD Type', markers=True, title=f'CPD History for {history_site}')
                 st.plotly_chart(fig_hist, use_container_width=True)
         st.markdown("---")
-        st.subheader("📋 Current Status (Latest Record per Site)")
+        st.subheader(" Current Status (Latest Record per Site)")
         df_latest = filtered_df.sort_values('Supply Date').drop_duplicates(subset=['Site ID'], keep='last')
         display_cols = ['Site ID', 'Region', 'Cluster', 'Zones', 'Type of supply', 'Total QTY Supplied', 'Total QTY Before Supply', 'Approved CPD', 'Estimated CPD', 'CPD Variance', 'Variance Status', 'Supply Date', 'Estimated Next Supply Date', 'Supply Alert', 'Bobtail number']
         final_cols = [c for c in display_cols if c in df_latest.columns]
         st.dataframe(df_latest[final_cols], width="stretch", hide_index=True)
 else:
-    st.info(" Database is empty. Use the sidebar to upload an Excel file or add manual entries!")
+    st.info("👆 Database is empty. Use the sidebar to upload an Excel file or add manual entries!")
+      
