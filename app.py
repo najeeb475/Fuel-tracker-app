@@ -16,16 +16,12 @@ def clean_numeric(val):
 
 # --- 1. SECURITY & LOGIN (FIXED) ---
 controller = CookieController()
-
-# Set cookie expiry to 30 days from now
 cookie_expiry = datetime.now() + timedelta(days=30)
 
-# 🛠️ FIX: Check cookies FIRST to survive hard refreshes (F5)
 if controller.get('logged_in') == 'true':
     st.session_state.logged_in = True
     st.session_state.role = controller.get('role') or 'Team'
 
-# Only show login if NOT logged in
 if 'logged_in' not in st.session_state or not st.session_state.logged_in:
     st.title("🔒 Access Portal")
     tab1, tab2 = st.tabs(["👥 Team Access", "🔑 Admin Login"])
@@ -110,7 +106,7 @@ if db:
         st.warning(f"Database load issue: {e}")
 
 # --- 5. DATA INPUT ---
-st.sidebar.header(" Data Input")
+st.sidebar.header("📥 Data Input")
 input_method = st.sidebar.radio("How would you like to input data?", ("Manual Entry", "Edit Single Record", "Bulk Edit (Spreadsheet)", "Upload Excel File"), horizontal=True)
 
 if input_method == "Manual Entry":
@@ -118,7 +114,7 @@ if input_method == "Manual Entry":
     with st.sidebar.form("manual_entry_form"):
         if not df.empty and 'Site ID' in df.columns:
             existing_sites = sorted([str(s) for s in df['Site ID'].dropna().unique().tolist()])
-            site_choice = st.selectbox("Select Site", ["➕ New Site"] + existing_sites)
+            site_choice = st.selectbox("Select Site", [" New Site"] + existing_sites)
             if site_choice == "➕ New Site":
                 site_id = st.text_input("New Site ID")
                 region = st.text_input("Region"); cluster = st.text_input("Cluster")
@@ -237,7 +233,7 @@ elif input_method == "Upload Excel File":
         st.session_state['file_to_upload'] = uploaded_file
         st.sidebar.success(f"✅ File '{uploaded_file.name}' is ready.")
     if 'file_to_upload' in st.session_state:
-        if st.sidebar.button("🚀 CLICK HERE TO UPLOAD DATA TO DASHBOARD", type="primary"):
+        if st.sidebar.button(" CLICK HERE TO UPLOAD DATA TO DASHBOARD", type="primary"):
             file_to_process = st.session_state['file_to_upload']
             if not db: st.sidebar.error("❌ Database not connected.")
             else:
@@ -289,13 +285,13 @@ elif input_method == "Upload Excel File":
                         db.collection('supplies').add(record)
                         count += 1; progress_val = min(count / total_rows, 1.0); progress_bar.progress(progress_val)
                     st.sidebar.success(f"✅ Successfully uploaded {count} rows!"); del st.session_state['file_to_upload']; st.rerun()
-                except Exception as e: st.sidebar.error(f"❌ Upload failed: {str(e)}")
+                except Exception as e: st.sidebar.error(f" Upload failed: {str(e)}")
 
 # --- 6. ADMIN CONTROLS ---
 if st.session_state.role == 'Admin':
     st.sidebar.markdown("---")
     st.sidebar.subheader("🔑 Admin Controls")
-    if st.sidebar.button("️ Clear Database"): 
+    if st.sidebar.button("🗑️ Clear Database"): 
         if st.sidebar.checkbox("Are you sure?"):
             docs = db.collection('supplies').stream()
             for doc in docs: doc.reference.delete()
@@ -380,12 +376,12 @@ if not df.empty:
 
     if filtered_df.empty: st.warning("No data found for the selected filters.")
     else:
-        st.subheader("📊 Summary Dashboard")
+        st.subheader(" Summary Dashboard")
         total_sites = filtered_df['Site ID'].nunique()
         total_supplied = filtered_df['Total QTY Supplied'].sum()
         
-        # 🛠️ FIX: Corrected emoji matching for High Variance
-        high_variance_count = (filtered_df['Variance Status'] == ' High Variance').sum()
+        # 🛠️ FIX: Use .str.contains() to safely find "High Variance" regardless of emoji encoding issues
+        high_variance_count = filtered_df['Variance Status'].str.contains('High Variance', na=False).sum()
         
         urgent_supplies = filtered_df['Supply Alert'].apply(lambda x: 1 if 'CRITICAL' in str(x) or 'WARNING' in str(x) or 'OVERDUE' in str(x) else 0).sum()
         
@@ -393,10 +389,10 @@ if not df.empty:
         col1.metric("Total Sites Tracked", total_sites)
         col2.metric("Sites Supplied in Range", total_sites)
         col3.metric("Total Fuel Supplied", f"{total_supplied:,.0f} L")
-        col4.metric("High Variance Sites", high_variance_count)
-        col5.metric("Urgent Supplies", urgent_supplies)
+        col4.metric("High Variance Sites", int(high_variance_count))
+        col5.metric("Urgent Supplies", int(urgent_supplies))
         st.markdown("---")
-        st.subheader(" Sites by Zone")
+        st.subheader("📍 Sites by Zone")
         if 'Zones' in filtered_df.columns:
             z1, z2, z3 = st.columns(3)
             with z1: st.metric("Zone A1", filtered_df[filtered_df['Zones'] == 'A1']['Site ID'].nunique())
@@ -419,7 +415,7 @@ if not df.empty:
             st.subheader("Variance Status Distribution")
             status_counts = filtered_df['Variance Status'].value_counts().reset_index()
             status_counts.columns = ['Status', 'Count']
-            color_map = {'🟢 On Target': '#28a745', '🟡 Slight Variance': '#ffc107', '🔴 High Variance': '#dc3545', '⚪ N/A': '#6c757d'}
+            color_map = {'🟢 On Target': '#28a745', '🟡 Slight Variance': '#ffc107', ' High Variance': '#dc3545', '⚪ N/A': '#6c757d'}
             fig = px.bar(status_counts, x='Status', y='Count', color='Status', color_discrete_map=color_map, text='Count')
             fig.update_layout(showlegend=False, yaxis_title='Count', xaxis_title='')
             st.plotly_chart(fig, use_container_width=True)
@@ -443,4 +439,4 @@ if not df.empty:
         final_cols = [c for c in display_cols if c in df_latest.columns]
         st.dataframe(df_latest[final_cols], width="stretch", hide_index=True)
 else:
-    st.info("👆 Database is empty. Use the sidebar to upload an Excel file or add manual entries!")
+    st.info(" Database is empty. Use the sidebar to upload an Excel file or add manual entries!")
