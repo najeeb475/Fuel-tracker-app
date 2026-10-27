@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from datetime import timedelta, date
+from datetime import timedelta, date, datetime
 import io
 import plotly.express as px
 import firebase_admin
@@ -14,10 +14,13 @@ def clean_numeric(val):
     try: return float(val_str)
     except: return 0.0
 
-# --- 1. SECURITY & LOGIN (IMPROVED) ---
+# --- 1. SECURITY & LOGIN (FIXED) ---
 controller = CookieController()
 
-# 🛠️ FIX: Force check cookies on EVERY load
+# Set cookie expiry to 30 days from now
+cookie_expiry = datetime.now() + timedelta(days=30)
+
+# 🛠️ FIX: Check cookies FIRST to survive hard refreshes (F5)
 if controller.get('logged_in') == 'true':
     st.session_state.logged_in = True
     st.session_state.role = controller.get('role') or 'Team'
@@ -30,8 +33,8 @@ if 'logged_in' not in st.session_state or not st.session_state.logged_in:
         if st.button("Enter as Team"):
             st.session_state.logged_in = True
             st.session_state.role = 'Team'
-            controller.set('logged_in', 'true', expires=86400)  # 24 hours
-            controller.set('role', 'Team', expires=86400)
+            controller.set('logged_in', 'true', expires=cookie_expiry)
+            controller.set('role', 'Team', expires=cookie_expiry)
             st.rerun()
     with tab2:
         password = st.text_input("Enter Admin Password", type="password")
@@ -39,16 +42,16 @@ if 'logged_in' not in st.session_state or not st.session_state.logged_in:
             if password == "admin123": 
                 st.session_state.logged_in = True
                 st.session_state.role = 'Admin'
-                controller.set('logged_in', 'true', expires=86400)
-                controller.set('role', 'Admin', expires=86400)
+                controller.set('logged_in', 'true', expires=cookie_expiry)
+                controller.set('role', 'Admin', expires=cookie_expiry)
                 st.rerun()
             else: st.error("Incorrect password.")
     st.stop()
 
 # --- 2. PAGE CONFIG ---
 st.set_page_config(page_title="Supply & CPD Tracker", layout="wide")
-st.title("📊 Supply & CPD Tracker App")
-if st.session_state.role == 'Admin': st.sidebar.success("🔑 Logged in as Admin")
+st.title(" Supply & CPD Tracker App")
+if st.session_state.role == 'Admin': st.sidebar.success(" Logged in as Admin")
 else: st.sidebar.info("👥 Logged in as Team Member")
 
 if st.sidebar.button("Logout"):
@@ -107,7 +110,7 @@ if db:
         st.warning(f"Database load issue: {e}")
 
 # --- 5. DATA INPUT ---
-st.sidebar.header("📥 Data Input")
+st.sidebar.header(" Data Input")
 input_method = st.sidebar.radio("How would you like to input data?", ("Manual Entry", "Edit Single Record", "Bulk Edit (Spreadsheet)", "Upload Excel File"), horizontal=True)
 
 if input_method == "Manual Entry":
@@ -116,7 +119,7 @@ if input_method == "Manual Entry":
         if not df.empty and 'Site ID' in df.columns:
             existing_sites = sorted([str(s) for s in df['Site ID'].dropna().unique().tolist()])
             site_choice = st.selectbox("Select Site", ["➕ New Site"] + existing_sites)
-            if site_choice == " New Site":
+            if site_choice == "➕ New Site":
                 site_id = st.text_input("New Site ID")
                 region = st.text_input("Region"); cluster = st.text_input("Cluster")
                 zone = st.selectbox("Zones", ["A1", "A2", "A3"])
@@ -184,7 +187,7 @@ elif input_method == "Edit Single Record":
             st.sidebar.success("✅ Record updated!"); st.rerun()
         if delete_record:
             db.collection('supplies').document(doc_id).delete()
-            st.sidebar.success("🗑️ Record deleted!"); st.rerun()
+            st.sidebar.success("️ Record deleted!"); st.rerun()
     else: st.sidebar.warning("No data available to edit.")
 
 elif input_method == "Bulk Edit (Spreadsheet)":
@@ -292,7 +295,7 @@ elif input_method == "Upload Excel File":
 if st.session_state.role == 'Admin':
     st.sidebar.markdown("---")
     st.sidebar.subheader("🔑 Admin Controls")
-    if st.sidebar.button("🗑️ Clear Database"): 
+    if st.sidebar.button("️ Clear Database"): 
         if st.sidebar.checkbox("Are you sure?"):
             docs = db.collection('supplies').stream()
             for doc in docs: doc.reference.delete()
@@ -331,7 +334,7 @@ if not df.empty:
             app = row['Approved CPD']; var = row['CPD Variance']
             if app == 0: return "⚪ N/A"
             pct = abs(var) / app
-            if pct <= 0.05: return " On Target"
+            if pct <= 0.05: return "🟢 On Target"
             elif pct <= 0.15: return "🟡 Slight Variance"
             else: return "🔴 High Variance"
         df['Variance Status'] = df.apply(get_status, axis=1)
@@ -341,7 +344,7 @@ if not df.empty:
             if pd.isnull(next_date): return ""
             days_diff = (next_date - today).days
             if days_diff < 0: return "🚨 OVERDUE"
-            elif days_diff == 0: return " CRITICAL: Supply Today"
+            elif days_diff == 0: return "🔴 CRITICAL: Supply Today"
             elif days_diff <= 2: return f"🟡 WARNING: Supply in {days_diff} days"
             else: return ""
         df['Supply Alert'] = df['Estimated Next Supply Date'].apply(get_supply_alert)
@@ -382,7 +385,7 @@ if not df.empty:
         total_supplied = filtered_df['Total QTY Supplied'].sum()
         
         # 🛠️ FIX: Corrected emoji matching for High Variance
-        high_variance_count = (filtered_df['Variance Status'] == '🔴 High Variance').sum()
+        high_variance_count = (filtered_df['Variance Status'] == ' High Variance').sum()
         
         urgent_supplies = filtered_df['Supply Alert'].apply(lambda x: 1 if 'CRITICAL' in str(x) or 'WARNING' in str(x) or 'OVERDUE' in str(x) else 0).sum()
         
@@ -393,7 +396,7 @@ if not df.empty:
         col4.metric("High Variance Sites", high_variance_count)
         col5.metric("Urgent Supplies", urgent_supplies)
         st.markdown("---")
-        st.subheader("📍 Sites by Zone")
+        st.subheader(" Sites by Zone")
         if 'Zones' in filtered_df.columns:
             z1, z2, z3 = st.columns(3)
             with z1: st.metric("Zone A1", filtered_df[filtered_df['Zones'] == 'A1']['Site ID'].nunique())
@@ -416,7 +419,7 @@ if not df.empty:
             st.subheader("Variance Status Distribution")
             status_counts = filtered_df['Variance Status'].value_counts().reset_index()
             status_counts.columns = ['Status', 'Count']
-            color_map = {' On Target': '#28a745', '🟡 Slight Variance': '#ffc107', '🔴 High Variance': '#dc3545', '⚪ N/A': '#6c757d'}
+            color_map = {'🟢 On Target': '#28a745', '🟡 Slight Variance': '#ffc107', '🔴 High Variance': '#dc3545', '⚪ N/A': '#6c757d'}
             fig = px.bar(status_counts, x='Status', y='Count', color='Status', color_discrete_map=color_map, text='Count')
             fig.update_layout(showlegend=False, yaxis_title='Count', xaxis_title='')
             st.plotly_chart(fig, use_container_width=True)
