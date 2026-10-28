@@ -23,8 +23,8 @@ if controller.get('logged_in') == 'true':
     st.session_state.role = controller.get('role') or 'Team'
 
 if 'logged_in' not in st.session_state or not st.session_state.logged_in:
-    st.title(" Access Portal")
-    tab1, tab2 = st.tabs(["👥 Team Access", " Admin Login"])
+    st.title("🔒 Access Portal")
+    tab1, tab2 = st.tabs(["👥 Team Access", "🔑 Admin Login"])
     with tab1:
         if st.button("Enter as Team"):
             st.session_state.logged_in = True
@@ -48,7 +48,7 @@ if 'logged_in' not in st.session_state or not st.session_state.logged_in:
 st.set_page_config(page_title="Supply & CPD Tracker", layout="wide")
 st.title("📊 Supply & CPD Tracker App")
 if st.session_state.role == 'Admin': st.sidebar.success("🔑 Logged in as Admin")
-else: st.sidebar.info(" Logged in as Team Member")
+else: st.sidebar.info("👥 Logged in as Team Member")
 
 if st.sidebar.button("Logout"):
     st.session_state.logged_in = False
@@ -88,7 +88,6 @@ if db:
         if data:
             df_raw = pd.DataFrame(data)
             
-            # Force Site ID to be string
             if 'Site ID' in df_raw.columns:
                 df_raw['Site ID'] = df_raw['Site ID'].astype(str).str.strip()
 
@@ -98,7 +97,6 @@ if db:
                 df_raw = df_raw.rename(columns={'Date': 'Supply Date'})
                 df_raw['Supply Date'] = pd.to_datetime(df_raw['Supply Date'], errors='coerce')
             
-            # Clean ALL numeric columns immediately
             num_cols = ['Qty before supply Tank 1', 'QTY supplied Tank 1', 'Qty before supply Tank 2', 'QTY supplied Tank 2', 'Approved CPD']
             for col in num_cols:
                 if col in df_raw.columns:
@@ -107,8 +105,6 @@ if db:
             if not df_raw.empty:
                 if 'Zones' in df_raw.columns: df_raw['Zones'] = df_raw['Zones'].astype(str).str.strip().str.upper()
                 
-            # ️ THE FIX: Create a clean, aggregated dataframe for the time-series math
-            # This ensures exactly ONE row per Site per Date, fixing the shift(1) logic
             if 'Site ID' in df_raw.columns and 'Supply Date' in df_raw.columns:
                 agg_dict = {
                     'QTY supplied Tank 1': 'sum', 'QTY supplied Tank 2': 'sum',
@@ -116,16 +112,15 @@ if db:
                     'Approved CPD': 'mean', 'Region': 'first', 'Cluster': 'first', 
                     'Zones': 'first', 'Bobtail number': 'last', 'Type of supply': 'last'
                 }
-                # Only aggregate columns that exist
                 agg_dict = {k: v for k, v in agg_dict.items() if k in df_raw.columns}
                 df_math = df_raw.groupby(['Site ID', 'Supply Date']).agg(agg_dict).reset_index()
                 
-            st.sidebar.info(f" Loaded {len(df_raw)} raw records ({len(df_math)} unique site-dates for math).")
+            st.sidebar.info(f"📊 Loaded {len(df_raw)} raw records ({len(df_math)} unique site-dates for math).")
     except Exception as e:
         st.warning(f"Database load issue: {e}")
 
-# --- 5. DATA INPUT ---
-st.sidebar.header("📥 Data Input")
+# --- 5. DATA INPUT (Manual, Edit, Bulk, Upload) ---
+st.sidebar.header(" Data Input")
 input_method = st.sidebar.radio("How would you like to input data?", ("Manual Entry", "Edit Single Record", "Bulk Edit (Spreadsheet)", "Upload Excel File"), horizontal=True)
 
 if input_method == "Manual Entry":
@@ -134,25 +129,19 @@ if input_method == "Manual Entry":
         if not df_raw.empty and 'Site ID' in df_raw.columns:
             existing_sites = sorted(df_raw['Site ID'].dropna().unique().tolist())
             site_choice = st.selectbox("Select Site", ["➕ New Site"] + existing_sites)
-            
-            if site_choice == "➕ New Site":
-                site_id = st.text_input("New Site ID")
-                region = st.text_input("Region"); cluster = st.text_input("Cluster")
+            if site_choice == " New Site":
+                site_id = st.text_input("New Site ID"); region = st.text_input("Region"); cluster = st.text_input("Cluster")
                 zone = st.selectbox("Zones", ["A1", "A2", "A3"])
             else:
                 site_id = site_choice
                 site_df = df_raw[df_raw['Site ID'] == str(site_id)]
                 if not site_df.empty:
                     last_record = site_df.sort_values('Supply Date').iloc[-1]
-                    region = last_record.get('Region', '')
-                    cluster = last_record.get('Cluster', '')
-                    zone = last_record.get('Zones', 'A1')
+                    region = last_record.get('Region', ''); cluster = last_record.get('Cluster', ''); zone = last_record.get('Zones', 'A1')
                     st.success(f"Updating existing site: {site_id}")
-                else:
-                    region = ''; cluster = ''; zone = 'A1'
+                else: region = ''; cluster = ''; zone = 'A1'
         else:
-            site_id = st.text_input("Site ID"); region = st.text_input("Region")
-            cluster = st.text_input("Cluster"); zone = st.selectbox("Zones", ["A1", "A2", "A3"])
+            site_id = st.text_input("Site ID"); region = st.text_input("Region"); cluster = st.text_input("Cluster"); zone = st.selectbox("Zones", ["A1", "A2", "A3"])
 
         col1, col2 = st.columns(2)
         with col1:
@@ -165,7 +154,7 @@ if input_method == "Manual Entry":
             supply_date = st.date_input("Supply Date"); bobtail = st.text_input("Bobtail number")
             supply_type = st.text_input("Type of supply", value="Oct 1st supply")
             
-        submitted = st.form_submit_button(" Save to Database")
+        submitted = st.form_submit_button("💾 Save to Database")
         if submitted:
             if not site_id: st.error("Please enter a Site ID.")
             elif not db: st.error("Database not connected.")
@@ -185,11 +174,9 @@ elif input_method == "Edit Single Record":
         site_dates = df_raw[df_raw['Site ID'] == edit_site]['Supply Date'].sort_values(ascending=False)
         date_options = [d.strftime('%Y-%m-%d') for d in site_dates]
         edit_date_str = st.sidebar.selectbox("2. Select Date to Edit", date_options)
-        
         row_data_df = df_raw[(df_raw['Site ID'] == str(edit_site)) & (df_raw['Supply Date'].astype(str) == edit_date_str)]
         if not row_data_df.empty:
-            row_data = row_data_df.iloc[0]
-            doc_id = row_data['doc_id']
+            row_data = row_data_df.iloc[0]; doc_id = row_data['doc_id']
             st.sidebar.info(f"Editing record ID: {doc_id[:8]}...")
             with st.sidebar.form("edit_form"):
                 st.markdown("**Update Values:**")
@@ -212,8 +199,7 @@ elif input_method == "Edit Single Record":
             if delete_record:
                 db.collection('supplies').document(doc_id).delete()
                 st.sidebar.success("🗑️ Record deleted!"); st.rerun()
-        else:
-            st.sidebar.warning("Could not find this specific record.")
+        else: st.sidebar.warning("Could not find this specific record.")
     else: st.sidebar.warning("No data available to edit.")
 
 elif input_method == "Bulk Edit (Spreadsheet)":
@@ -222,19 +208,14 @@ elif input_method == "Bulk Edit (Spreadsheet)":
     if not df_raw.empty and 'Supply Date' in df_raw.columns:
         unique_dates = sorted(df_raw['Supply Date'].dt.date.unique(), reverse=True)
         selected_bulk_date = st.sidebar.date_input("Select Date to Edit", value=unique_dates[0] if unique_dates else date.today())
-        
         bulk_df = df_raw[df_raw['Supply Date'].dt.date == selected_bulk_date].copy()
-        
         if not bulk_df.empty:
             st.sidebar.success(f"Found {len(bulk_df)} records for {selected_bulk_date}")
             editable_cols = ['Approved CPD', 'Qty before supply Tank 1', 'QTY supplied Tank 1', 'Qty before supply Tank 2', 'QTY supplied Tank 2', 'Bobtail number', 'Type of supply']
             cols_to_show = ['Site ID', 'Region', 'Zones'] + [c for c in editable_cols if c in bulk_df.columns]
-            
             st.subheader(f"Edit Records for {selected_bulk_date}")
             st.write("Click on any cell below to change the value. When finished, click 'Save All Changes'.")
-            
             edited_df = st.data_editor(bulk_df[cols_to_show], num_rows="fixed", use_container_width=True, key="bulk_editor")
-            
             if st.button("💾 Save All Changes to Database", type="primary"):
                 count = 0
                 for idx in edited_df.index:
@@ -245,16 +226,12 @@ elif input_method == "Bulk Edit (Spreadsheet)":
                             val = edited_df.loc[idx, col]
                             if col in ['Approved CPD', 'Qty before supply Tank 1', 'QTY supplied Tank 1', 'Qty before supply Tank 2', 'QTY supplied Tank 2']:
                                 update_data[col] = float(val) if pd.notnull(val) else 0.0
-                            else:
-                                update_data[col] = str(val)
+                            else: update_data[col] = str(val)
                     db.collection('supplies').document(doc_id).update(update_data)
                     count += 1
-                st.success(f"✅ Successfully updated {count} records in the database!")
-                st.rerun()
-        else:
-            st.warning("No records found for this date.")
-    else:
-        st.warning("Database is empty.")
+                st.success(f"✅ Successfully updated {count} records in the database!"); st.rerun()
+        else: st.warning("No records found for this date.")
+    else: st.warning("Database is empty.")
 
 elif input_method == "Upload Excel File":
     st.sidebar.subheader("Upload Excel to Database")
@@ -330,15 +307,27 @@ if st.session_state.role == 'Admin':
 # --- 7. DASHBOARD LOGIC ---
 if not df_math.empty:
     st.divider()
+    
+    # 🛠️ NEW: DATA DIAGNOSTIC PANEL
+    with st.expander("🔍 Data Diagnostic (Click to see why Variance might be 0)", expanded=True):
+        if 'Site ID' in df_math.columns and 'Supply Date' in df_math.columns:
+            site_date_counts = df_math.groupby('Site ID')['Supply Date'].nunique()
+            sites_with_history = int((site_date_counts > 1).sum())
+            sites_single_date = int((site_date_counts == 1).sum())
+            nat_dates = int(df_raw['Supply Date'].isna().sum())
+            
+            st.write(f"**Total Sites:** {df_math['Site ID'].nunique()}")
+            st.write(f"**Sites with 2+ Dates (Can calculate Variance):** {sites_with_history}")
+            st.write(f"**Sites with only 1 Date (Variance will be 0):** {sites_single_date}")
+            st.write(f"**Records with Invalid Dates (NaT):** {nat_dates}")
+            if sites_with_history == 0:
+                st.warning("⚠️ No sites have multiple dates in the database yet. Variance and Next Supply Date cannot be calculated until a site has at least 2 different supply dates.")
+
     if 'Supply Date' in df_math.columns and 'Site ID' in df_math.columns:
-        # Sort data chronologically for the math dataframe
         df_math = df_math.sort_values(by=['Site ID', 'Supply Date'])
-        
-        # Calculate Totals per row
         df_math['Total QTY Supplied'] = df_math['QTY supplied Tank 1'] + df_math['QTY supplied Tank 2']
         df_math['Total QTY Before Supply'] = df_math['Qty before supply Tank 1'] + df_math['Qty before supply Tank 2']
         
-        # CPD Math (Now works perfectly because df_math has exactly 1 row per site per date)
         df_math['Prev_Total_Before'] = df_math.groupby('Site ID')['Total QTY Before Supply'].shift(1)
         df_math['Prev_Total_Supplied'] = df_math.groupby('Site ID')['Total QTY Supplied'].shift(1)
         df_math['Prev_Supply_Date'] = df_math.groupby('Site ID')['Supply Date'].shift(1)
@@ -370,7 +359,7 @@ if not df_math.empty:
             if app == 0: return "⚪ N/A"
             pct = abs(var) / app
             if pct <= 0.05: return "🟢 On Target"
-            elif pct <= 0.15: return "🟡 Slight Variance"
+            elif pct <= 0.15: return " Slight Variance"
             else: return "🔴 High Variance"
         df_math['Variance Status'] = df_math.apply(get_status, axis=1)
         
@@ -378,14 +367,13 @@ if not df_math.empty:
         def get_supply_alert(next_date):
             if pd.isnull(next_date): return ""
             days_diff = (next_date - today).days
-            if days_diff < 0: return "🚨 OVERDUE"
+            if days_diff < 0: return " OVERDUE"
             elif days_diff == 0: return "🔴 CRITICAL: Supply Today"
             elif days_diff <= 2: return f"🟡 WARNING: Supply in {days_diff} days"
             else: return ""
         df_math['Supply Alert'] = df_math['Estimated Next Supply Date'].apply(get_supply_alert)
 
     st.sidebar.header("🔍 Filters")
-    # Use df_math for date filters to ensure consistency
     valid_dates = df_math['Supply Date'].dropna()
     if not valid_dates.empty:
         min_date = valid_dates.min().date(); max_date = valid_dates.max().date()
@@ -406,36 +394,29 @@ if not df_math.empty:
     sites = ['All'] + list(df_math['Site ID'].dropna().unique()) if 'Site ID' in df_math.columns else ['All']
     selected_site = st.sidebar.selectbox("Site ID", sites)
 
-    # Create masks for BOTH dataframes separately to prevent IndexingError
     mask_math = ((df_math['Supply Date'].dt.date >= start_date) & (df_math['Supply Date'].dt.date <= end_date))
     if selected_region != 'All': mask_math &= (df_math['Region'] == selected_region)
     if selected_cluster != 'All': mask_math &= (df_math['Cluster'] == selected_cluster)
     if selected_zone != 'All': mask_math &= (df_math['Zones'] == selected_zone)
     if selected_supply_type != 'All': mask_math &= (df_math['Type of supply'] == selected_supply_type)
     if selected_site != 'All': mask_math &= (df_math['Site ID'] == selected_site)
-    
     filtered_math_df = df_math[mask_math].copy()
 
-    # Apply same logic to raw dataframe for accurate summing
     mask_raw = ((df_raw['Supply Date'].dt.date >= start_date) & (df_raw['Supply Date'].dt.date <= end_date))
     if selected_region != 'All': mask_raw &= (df_raw['Region'] == selected_region)
     if selected_cluster != 'All': mask_raw &= (df_raw['Cluster'] == selected_cluster)
     if selected_zone != 'All': mask_raw &= (df_raw['Zones'] == selected_zone)
     if selected_supply_type != 'All': mask_raw &= (df_raw['Type of supply'] == selected_supply_type)
     if selected_site != 'All': mask_raw &= (df_raw['Site ID'] == selected_site)
-    
     filtered_raw_df = df_raw[mask_raw].copy()
 
     if filtered_math_df.empty: st.warning("No data found for the selected filters.")
     else:
         st.subheader("📊 Summary Dashboard")
         total_sites = filtered_math_df['Site ID'].nunique()
-        
-        # 🛠️ FIX 1: Sum from RAW data to get the exact 2.5M Liters
         total_supplied = pd.to_numeric(filtered_raw_df['QTY supplied Tank 1'], errors='coerce').fillna(0.0).sum() + \
                          pd.to_numeric(filtered_raw_df['QTY supplied Tank 2'], errors='coerce').fillna(0.0).sum()
         
-        # ️ FIX 2: Calculate High Variance using pure math on the clean math dataframe
         high_variance_count = 0
         if 'Estimated CPD' in filtered_math_df.columns and 'Approved CPD' in filtered_math_df.columns:
             valid_var = filtered_math_df[(filtered_math_df['Estimated CPD'] > 0) & (filtered_math_df['Approved CPD'] > 0)]
@@ -495,7 +476,6 @@ if not df_math.empty:
                 st.plotly_chart(fig_hist, use_container_width=True)
         st.markdown("---")
         st.subheader("📋 Current Status (Latest Record per Site)")
-        # Show the latest record from the math dataframe (which has Next Supply Date)
         df_latest = filtered_math_df.sort_values('Supply Date').drop_duplicates(subset=['Site ID'], keep='last')
         display_cols = ['Site ID', 'Region', 'Cluster', 'Zones', 'Type of supply', 'Total QTY Supplied', 'Total QTY Before Supply', 'Approved CPD', 'Estimated CPD', 'CPD Variance', 'Variance Status', 'Supply Date', 'Estimated Next Supply Date', 'Supply Alert', 'Bobtail number']
         final_cols = [c for c in display_cols if c in df_latest.columns]
