@@ -120,7 +120,7 @@ if db:
         st.warning(f"Database load issue: {e}")
 
 # --- 5. DATA INPUT (Manual, Edit, Bulk, Upload) ---
-st.sidebar.header(" Data Input")
+st.sidebar.header("📥 Data Input")
 input_method = st.sidebar.radio("How would you like to input data?", ("Manual Entry", "Edit Single Record", "Bulk Edit (Spreadsheet)", "Upload Excel File"), horizontal=True)
 
 if input_method == "Manual Entry":
@@ -129,7 +129,7 @@ if input_method == "Manual Entry":
         if not df_raw.empty and 'Site ID' in df_raw.columns:
             existing_sites = sorted(df_raw['Site ID'].dropna().unique().tolist())
             site_choice = st.selectbox("Select Site", ["➕ New Site"] + existing_sites)
-            if site_choice == " New Site":
+            if site_choice == "➕ New Site":
                 site_id = st.text_input("New Site ID"); region = st.text_input("Region"); cluster = st.text_input("Cluster")
                 zone = st.selectbox("Zones", ["A1", "A2", "A3"])
             else:
@@ -308,21 +308,6 @@ if st.session_state.role == 'Admin':
 if not df_math.empty:
     st.divider()
     
-    # 🛠️ NEW: DATA DIAGNOSTIC PANEL
-    with st.expander("🔍 Data Diagnostic (Click to see why Variance might be 0)", expanded=True):
-        if 'Site ID' in df_math.columns and 'Supply Date' in df_math.columns:
-            site_date_counts = df_math.groupby('Site ID')['Supply Date'].nunique()
-            sites_with_history = int((site_date_counts > 1).sum())
-            sites_single_date = int((site_date_counts == 1).sum())
-            nat_dates = int(df_raw['Supply Date'].isna().sum())
-            
-            st.write(f"**Total Sites:** {df_math['Site ID'].nunique()}")
-            st.write(f"**Sites with 2+ Dates (Can calculate Variance):** {sites_with_history}")
-            st.write(f"**Sites with only 1 Date (Variance will be 0):** {sites_single_date}")
-            st.write(f"**Records with Invalid Dates (NaT):** {nat_dates}")
-            if sites_with_history == 0:
-                st.warning("⚠️ No sites have multiple dates in the database yet. Variance and Next Supply Date cannot be calculated until a site has at least 2 different supply dates.")
-
     if 'Supply Date' in df_math.columns and 'Site ID' in df_math.columns:
         df_math = df_math.sort_values(by=['Site ID', 'Supply Date'])
         df_math['Total QTY Supplied'] = df_math['QTY supplied Tank 1'] + df_math['QTY supplied Tank 2']
@@ -359,7 +344,7 @@ if not df_math.empty:
             if app == 0: return "⚪ N/A"
             pct = abs(var) / app
             if pct <= 0.05: return "🟢 On Target"
-            elif pct <= 0.15: return " Slight Variance"
+            elif pct <= 0.15: return "🟡 Slight Variance"
             else: return "🔴 High Variance"
         df_math['Variance Status'] = df_math.apply(get_status, axis=1)
         
@@ -367,7 +352,7 @@ if not df_math.empty:
         def get_supply_alert(next_date):
             if pd.isnull(next_date): return ""
             days_diff = (next_date - today).days
-            if days_diff < 0: return " OVERDUE"
+            if days_diff < 0: return "🚨 OVERDUE"
             elif days_diff == 0: return "🔴 CRITICAL: Supply Today"
             elif days_diff <= 2: return f"🟡 WARNING: Supply in {days_diff} days"
             else: return ""
@@ -441,7 +426,7 @@ if not df_math.empty:
             with z2: st.metric("Zone A2", filtered_math_df[filtered_math_df['Zones'] == 'A2']['Site ID'].nunique())
             with z3: st.metric("Zone A3", filtered_math_df[filtered_math_df['Zones'] == 'A3']['Site ID'].nunique())
         st.markdown("---")
-        st.subheader(" Sites by Supply Type")
+        st.subheader("🚛 Sites by Supply Type")
         if 'Type of supply' in filtered_math_df.columns:
             supply_counts = filtered_math_df.groupby('Type of supply')['Site ID'].nunique().sort_values(ascending=False)
             if len(supply_counts) > 0:
@@ -457,7 +442,7 @@ if not df_math.empty:
             st.subheader("Variance Status Distribution")
             status_counts = filtered_math_df['Variance Status'].value_counts().reset_index()
             status_counts.columns = ['Status', 'Count']
-            color_map = {'🟢 On Target': '#28a745', '🟡 Slight Variance': '#ffc107', '🔴 High Variance': '#dc3545', ' N/A': '#6c757d'}
+            color_map = {'🟢 On Target': '#28a745', '🟡 Slight Variance': '#ffc107', '🔴 High Variance': '#dc3545', '⚪ N/A': '#6c757d'}
             fig = px.bar(status_counts, x='Status', y='Count', color='Status', color_discrete_map=color_map, text='Count')
             fig.update_layout(showlegend=False, yaxis_title='Count', xaxis_title='')
             st.plotly_chart(fig, use_container_width=True)
