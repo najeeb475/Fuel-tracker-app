@@ -73,9 +73,7 @@ def init_firebase():
 db = init_firebase()
 
 # --- 4. LOAD DATA ---
-df_raw = pd.DataFrame()
 df = pd.DataFrame()
-
 if db:
     try:
         docs = db.collection('supplies').stream()
@@ -86,33 +84,29 @@ if db:
             data.append(d)
             
         if data:
-            df_raw = pd.DataFrame(data)
+            df = pd.DataFrame(data)
             
             # Force Site ID to be string
-            if 'Site ID' in df_raw.columns:
-                df_raw['Site ID'] = df_raw['Site ID'].astype(str).str.strip()
+            if 'Site ID' in df.columns:
+                df['Site ID'] = df['Site ID'].astype(str).str.strip()
 
-            if 'Supply Date' in df_raw.columns:
-                df_raw['Supply Date'] = pd.to_datetime(df_raw['Supply Date'], errors='coerce')
-            elif 'Date' in df_raw.columns: 
-                df_raw = df_raw.rename(columns={'Date': 'Supply Date'})
-                df_raw['Supply Date'] = pd.to_datetime(df_raw['Supply Date'], errors='coerce')
+            if 'Supply Date' in df.columns:
+                df['Supply Date'] = pd.to_datetime(df['Supply Date'], errors='coerce')
+            elif 'Date' in df.columns: 
+                df = df.rename(columns={'Date': 'Supply Date'})
+                df['Supply Date'] = pd.to_datetime(df['Supply Date'], errors='coerce')
             
             # Clean ALL numeric columns immediately
             num_cols = ['Qty before supply Tank 1', 'QTY supplied Tank 1', 'Qty before supply Tank 2', 'QTY supplied Tank 2', 'Approved CPD']
             for col in num_cols:
-                if col in df_raw.columns:
-                    df_raw[col] = df_raw[col].apply(clean_numeric).fillna(0.0)
+                if col in df.columns:
+                    df[col] = df[col].apply(clean_numeric).fillna(0.0)
 
-            if not df_raw.empty:
-                if 'Zones' in df_raw.columns: df_raw['Zones'] = df_raw['Zones'].astype(str).str.strip().str.upper()
+            if not df.empty:
+                if 'Zones' in df.columns: df['Zones'] = df['Zones'].astype(str).str.strip().str.upper()
                 
-            # 🛠️ THE FIX: Create a clean dataframe for CPD/Next Date math
-            df = df_raw.copy()
-            if 'Site ID' in df.columns and 'Supply Date' in df.columns:
-                df = df.drop_duplicates(subset=['Site ID', 'Supply Date'], keep='last')
-                
-            st.sidebar.info(f"📊 Loaded {len(df_raw)} total records ({len(df)} unique site-dates).")
+            # 🛠️ FIX: REMOVED drop_duplicates from here. We keep all rows to ensure Total QTY is accurate.
+            st.sidebar.info(f"📊 Loaded {len(df)} total records from database.")
     except Exception as e:
         st.warning(f"Database load issue: {e}")
 
@@ -125,7 +119,7 @@ if input_method == "Manual Entry":
     with st.sidebar.form("manual_entry_form"):
         if not df.empty and 'Site ID' in df.columns:
             existing_sites = sorted(df['Site ID'].dropna().unique().tolist())
-            site_choice = st.selectbox("Select Site", ["➕ New Site"] + existing_sites)
+            site_choice = st.selectbox("Select Site", [" New Site"] + existing_sites)
             
             if site_choice == "➕ New Site":
                 site_id = st.text_input("New Site ID")
@@ -194,7 +188,7 @@ elif input_method == "Edit Single Record":
                 new_type = st.text_input("Type of supply", value=str(row_data.get('Type of supply', '')))
                 col_btn1, col_btn2 = st.columns(2)
                 with col_btn1: save_changes = st.form_submit_button("✅ Save", type="primary")
-                with col_btn2: delete_record = st.form_submit_button("️ Delete", type="secondary")
+                with col_btn2: delete_record = st.form_submit_button("🗑️ Delete", type="secondary")
             if save_changes:
                 update_data = {'Approved CPD': float(new_cpd), 'Qty before supply Tank 1': float(new_q_b_t1), 'QTY supplied Tank 1': float(new_q_s_t1),
                                'Qty before supply Tank 2': float(new_q_b_t2), 'QTY supplied Tank 2': float(new_q_s_t2),
@@ -203,7 +197,7 @@ elif input_method == "Edit Single Record":
                 st.sidebar.success("✅ Record updated!"); st.rerun()
             if delete_record:
                 db.collection('supplies').document(doc_id).delete()
-                st.sidebar.success("🗑️ Record deleted!"); st.rerun()
+                st.sidebar.success("️ Record deleted!"); st.rerun()
         else:
             st.sidebar.warning("Could not find this specific record.")
     else: st.sidebar.warning("No data available to edit.")
@@ -255,7 +249,7 @@ elif input_method == "Upload Excel File":
         st.session_state['file_to_upload'] = uploaded_file
         st.sidebar.success(f"✅ File '{uploaded_file.name}' is ready.")
     if 'file_to_upload' in st.session_state:
-        if st.sidebar.button(" CLICK HERE TO UPLOAD DATA TO DASHBOARD", type="primary"):
+        if st.sidebar.button("🚀 CLICK HERE TO UPLOAD DATA TO DASHBOARD", type="primary"):
             file_to_process = st.session_state['file_to_upload']
             if not db: st.sidebar.error("❌ Database not connected.")
             else:
@@ -323,16 +317,19 @@ if st.session_state.role == 'Admin':
 if not df.empty:
     st.divider()
     if 'Supply Date' in df.columns and 'Site ID' in df.columns:
+        # Sort data chronologically
         df = df.sort_values(by=['Site ID', 'Supply Date'])
         
+        # Calculate Totals per row
         df['Total QTY Supplied'] = df['QTY supplied Tank 1'] + df['QTY supplied Tank 2']
         df['Total QTY Before Supply'] = df['Qty before supply Tank 1'] + df['Qty before supply Tank 2']
         
-        # CPD Math on the clean, deduplicated dataframe
+        # CPD Math (Works safely even if there are multiple rows per day)
         df['Prev_Total_Before'] = df.groupby('Site ID')['Total QTY Before Supply'].shift(1)
         df['Prev_Total_Supplied'] = df.groupby('Site ID')['Total QTY Supplied'].shift(1)
         df['Prev_Supply_Date'] = df.groupby('Site ID')['Supply Date'].shift(1)
         df['Days_Diff'] = (df['Supply Date'] - df['Prev_Supply_Date']).dt.days
+        
         df['Total_Consumed'] = (df['Prev_Total_Before'] + df['Prev_Total_Supplied']) - df['Total QTY Before Supply']
         df['Estimated CPD'] = df['Total_Consumed'] / df['Days_Diff']
         df['Estimated CPD'] = df['Estimated CPD'].where(df['Days_Diff'] > 0, 0) 
@@ -354,13 +351,13 @@ if not df.empty:
         df['CPD Variance'] = df.apply(calc_variance, axis=1)
         
         def get_status(row):
-            if row['Estimated CPD'] == 0 or pd.isnull(row['Estimated CPD']): return "⚪ N/A"
+            if row['Estimated CPD'] == 0 or pd.isnull(row['Estimated CPD']): return " N/A"
             app = row['Approved CPD']; var = row['CPD Variance']
             if app == 0: return "⚪ N/A"
             pct = abs(var) / app
             if pct <= 0.05: return "🟢 On Target"
             elif pct <= 0.15: return "🟡 Slight Variance"
-            else: return "🔴 High Variance"
+            else: return " High Variance"
         df['Variance Status'] = df.apply(get_status, axis=1)
         
         today = pd.Timestamp.today().date()
@@ -368,7 +365,7 @@ if not df.empty:
             if pd.isnull(next_date): return ""
             days_diff = (next_date - today).days
             if days_diff < 0: return "🚨 OVERDUE"
-            elif days_diff == 0: return "🔴 CRITICAL: Supply Today"
+            elif days_diff == 0: return " CRITICAL: Supply Today"
             elif days_diff <= 2: return f"🟡 WARNING: Supply in {days_diff} days"
             else: return ""
         df['Supply Alert'] = df['Estimated Next Supply Date'].apply(get_supply_alert)
@@ -402,19 +399,16 @@ if not df.empty:
     if selected_site != 'All': mask &= (df['Site ID'] == selected_site)
     
     filtered_df = df[mask].copy()
-    filtered_raw_df = df_raw[mask].copy() # Raw data for accurate summing
 
     if filtered_df.empty: st.warning("No data found for the selected filters.")
     else:
         st.subheader("📊 Summary Dashboard")
         total_sites = filtered_df['Site ID'].nunique()
         
-        # 🛠️ FIX: Sum from RAW data to prevent missing liters
-        tank1_sum = pd.to_numeric(filtered_raw_df['QTY supplied Tank 1'], errors='coerce').fillna(0.0).sum()
-        tank2_sum = pd.to_numeric(filtered_raw_df['QTY supplied Tank 2'], errors='coerce').fillna(0.0).sum()
-        total_supplied = tank1_sum + tank2_sum
+        # 🛠️ FIX: Sum directly from the filtered dataframe (which now contains ALL rows)
+        total_supplied = pd.to_numeric(filtered_df['Total QTY Supplied'], errors='coerce').fillna(0.0).sum()
         
-        # ️ FIX: Calculate High Variance using pure math on the clean dataframe
+        # 🛠️ FIX: Calculate High Variance using pure math
         high_variance_count = 0
         if 'Estimated CPD' in filtered_df.columns and 'Approved CPD' in filtered_df.columns:
             valid_var = filtered_df[(filtered_df['Estimated CPD'] > 0) & (filtered_df['Approved CPD'] > 0)]
@@ -439,7 +433,7 @@ if not df.empty:
             with z2: st.metric("Zone A2", filtered_df[filtered_df['Zones'] == 'A2']['Site ID'].nunique())
             with z3: st.metric("Zone A3", filtered_df[filtered_df['Zones'] == 'A3']['Site ID'].nunique())
         st.markdown("---")
-        st.subheader(" Sites by Supply Type")
+        st.subheader("🚛 Sites by Supply Type")
         if 'Type of supply' in filtered_df.columns:
             supply_counts = filtered_df.groupby('Type of supply')['Site ID'].nunique().sort_values(ascending=False)
             if len(supply_counts) > 0:
@@ -455,12 +449,12 @@ if not df.empty:
             st.subheader("Variance Status Distribution")
             status_counts = filtered_df['Variance Status'].value_counts().reset_index()
             status_counts.columns = ['Status', 'Count']
-            color_map = {' On Target': '#28a745', '🟡 Slight Variance': '#ffc107', '🔴 High Variance': '#dc3545', '⚪ N/A': '#6c757d'}
+            color_map = {'🟢 On Target': '#28a745', '🟡 Slight Variance': '#ffc107', '🔴 High Variance': '#dc3545', '⚪ N/A': '#6c757d'}
             fig = px.bar(status_counts, x='Status', y='Count', color='Status', color_discrete_map=color_map, text='Count')
             fig.update_layout(showlegend=False, yaxis_title='Count', xaxis_title='')
             st.plotly_chart(fig, use_container_width=True)
         st.markdown("---")
-        st.subheader("📜 Site History & CPD Trend")
+        st.subheader(" Site History & CPD Trend")
         st.write("Select a site below to see its Estimated CPD history across all months.")
         if 'Site ID' in df.columns:
             history_site = st.selectbox("Select Site ID to view history:", sorted(df['Site ID'].unique().tolist()))
@@ -474,6 +468,7 @@ if not df.empty:
                 st.plotly_chart(fig_hist, use_container_width=True)
         st.markdown("---")
         st.subheader("📋 Current Status (Latest Record per Site)")
+        # We only drop duplicates for the final display table
         df_latest = filtered_df.sort_values('Supply Date').drop_duplicates(subset=['Site ID'], keep='last')
         display_cols = ['Site ID', 'Region', 'Cluster', 'Zones', 'Type of supply', 'Total QTY Supplied', 'Total QTY Before Supply', 'Approved CPD', 'Estimated CPD', 'CPD Variance', 'Variance Status', 'Supply Date', 'Estimated Next Supply Date', 'Supply Alert', 'Bobtail number']
         final_cols = [c for c in display_cols if c in df_latest.columns]
