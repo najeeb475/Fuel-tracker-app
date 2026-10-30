@@ -26,6 +26,7 @@ if 'logged_in' not in st.session_state or not st.session_state.logged_in:
     st.title("🔒 Access Portal")
     tab1, tab2 = st.tabs(["👥 Team Access", "🔑 Admin Login"])
     with tab1:
+        st.write("Load data and view basic supply metrics. (No password required)")
         if st.button("Enter as Team"):
             st.session_state.logged_in = True
             st.session_state.role = 'Team'
@@ -33,6 +34,7 @@ if 'logged_in' not in st.session_state or not st.session_state.logged_in:
             controller.set('role', 'Team', expires=cookie_expiry)
             st.rerun()
     with tab2:
+        st.write("Full access to analytics, editing, and database management.")
         password = st.text_input("Enter Admin Password", type="password")
         if st.button("Login as Admin"):
             if password == "admin123": 
@@ -47,8 +49,11 @@ if 'logged_in' not in st.session_state or not st.session_state.logged_in:
 # --- 2. PAGE CONFIG ---
 st.set_page_config(page_title="Supply & CPD Tracker", layout="wide")
 st.title("📊 Supply & CPD Tracker App")
-if st.session_state.role == 'Admin': st.sidebar.success("🔑 Logged in as Admin")
-else: st.sidebar.info("👥 Logged in as Team Member")
+
+if st.session_state.role == 'Admin': 
+    st.sidebar.success(" Logged in as Admin")
+else: 
+    st.sidebar.info("👥 Logged in as Team Member")
 
 if st.sidebar.button("Logout"):
     st.session_state.logged_in = False
@@ -119,9 +124,15 @@ if db:
     except Exception as e:
         st.warning(f"Database load issue: {e}")
 
-# --- 5. DATA INPUT (Manual, Edit, Bulk, Upload) ---
-st.sidebar.header("📥 Data Input")
-input_method = st.sidebar.radio("How would you like to input data?", ("Manual Entry", "Edit Single Record", "Bulk Edit (Spreadsheet)", "Upload Excel File"), horizontal=True)
+# --- 5. DATA INPUT (Role-Based) ---
+st.sidebar.header(" Data Input")
+
+if st.session_state.role == 'Admin':
+    input_options = ("Manual Entry", "Edit Single Record", "Bulk Edit (Spreadsheet)", "Upload Excel File")
+else:
+    input_options = ("Manual Entry", "Upload Excel File")
+
+input_method = st.sidebar.radio("How would you like to input data?", input_options, horizontal=True)
 
 if input_method == "Manual Entry":
     st.sidebar.subheader("Enter Supply Details")
@@ -150,8 +161,14 @@ if input_method == "Manual Entry":
             qty_before_t2 = st.number_input("Qty before supply Tank 2", min_value=0.0, format="%.2f")
             qty_supplied_t2 = st.number_input("QTY supplied Tank 2", min_value=0.0, format="%.2f")
         with col2:
-            approved_cpd = st.number_input("Approved CPD", min_value=0.0, format="%.2f")
-            supply_date = st.date_input("Supply Date"); bobtail = st.text_input("Bobtail number")
+            # HIDE APPROVED CPD FROM TEAM
+            if st.session_state.role == 'Admin':
+                approved_cpd = st.number_input("Approved CPD", min_value=0.0, format="%.2f")
+            else:
+                approved_cpd = 0.0 # Default for team
+                
+            supply_date = st.date_input("Supply Date")
+            bobtail = st.text_input("Bobtail number")
             supply_type = st.text_input("Type of supply", value="Oct 1st supply")
             
         submitted = st.form_submit_button("💾 Save to Database")
@@ -168,7 +185,7 @@ if input_method == "Manual Entry":
                 st.success("✅ Saved successfully!"); st.rerun()
 
 elif input_method == "Edit Single Record":
-    st.sidebar.subheader("✏️ Edit / Update Single Record")
+    st.sidebar.subheader("️ Edit / Update Single Record")
     if not df_raw.empty and 'Site ID' in df_raw.columns:
         edit_site = st.sidebar.selectbox("1. Select Site ID", sorted(df_raw['Site ID'].unique().tolist()))
         site_dates = df_raw[df_raw['Site ID'] == edit_site]['Supply Date'].sort_values(ascending=False)
@@ -240,7 +257,7 @@ elif input_method == "Upload Excel File":
         st.session_state['file_to_upload'] = uploaded_file
         st.sidebar.success(f"✅ File '{uploaded_file.name}' is ready.")
     if 'file_to_upload' in st.session_state:
-        if st.sidebar.button("🚀 CLICK HERE TO UPLOAD DATA TO DASHBOARD", type="primary"):
+        if st.sidebar.button(" CLICK HERE TO UPLOAD DATA TO DASHBOARD", type="primary"):
             file_to_process = st.session_state['file_to_upload']
             if not db: st.sidebar.error("❌ Database not connected.")
             else:
@@ -299,7 +316,7 @@ if st.session_state.role == 'Admin':
     st.sidebar.markdown("---")
     st.sidebar.subheader("🔑 Admin Controls")
     if st.sidebar.button("🗑️ Clear Database"): 
-        if st.sidebar.checkbox("Are you sure?"):
+        if st.sidebar.checkbox("Are you sure? This deletes everything permanently."):
             docs = db.collection('supplies').stream()
             for doc in docs: doc.reference.delete()
             st.success("Database cleared!"); st.rerun()
@@ -411,12 +428,19 @@ if not df_math.empty:
         
         urgent_supplies = filtered_math_df['Supply Alert'].apply(lambda x: 1 if 'CRITICAL' in str(x) or 'WARNING' in str(x) or 'OVERDUE' in str(x) else 0).sum()
         
-        col1, col2, col3, col4, col5 = st.columns(5)
-        col1.metric("Total Sites Tracked", total_sites)
-        col2.metric("Sites Supplied in Range", total_sites)
-        col3.metric("Total Fuel Supplied", f"{total_supplied:,.2f} L")
-        col4.metric("High Variance Sites", high_variance_count)
-        col5.metric("Urgent Supplies", int(urgent_supplies))
+        if st.session_state.role == 'Admin':
+            col1, col2, col3, col4, col5 = st.columns(5)
+            col1.metric("Total Sites Tracked", total_sites)
+            col2.metric("Sites Supplied in Range", total_sites)
+            col3.metric("Total Fuel Supplied", f"{total_supplied:,.2f} L")
+            col4.metric("High Variance Sites", high_variance_count)
+            col5.metric("Urgent Supplies", int(urgent_supplies))
+        else:
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Total Sites Tracked", total_sites)
+            col2.metric("Sites Supplied in Range", total_sites)
+            col3.metric("Total Fuel Supplied", f"{total_supplied:,.2f} L")
+            col4.metric("Urgent Supplies", int(urgent_supplies))
         
         st.markdown("---")
         st.subheader("📍 Sites by Zone")
@@ -434,35 +458,60 @@ if not df_math.empty:
                 for i, (stype, count) in enumerate(supply_counts.items()):
                     with cols[i % 4]: st.metric(str(stype).title(), count)
         st.markdown("---")
-        chart_col1, chart_col2 = st.columns(2)
-        with chart_col1:
+        
+        if st.session_state.role == 'Admin':
+            chart_col1, chart_col2 = st.columns(2)
+            with chart_col1:
+                st.subheader("Total QTY Supplied by Region")
+                if 'Region' in filtered_math_df.columns: st.bar_chart(filtered_math_df.groupby('Region')['Total QTY Supplied'].sum(), width="stretch")
+            with chart_col2:
+                st.subheader("Variance Status Distribution")
+                status_counts = filtered_math_df['Variance Status'].value_counts().reset_index()
+                status_counts.columns = ['Status', 'Count']
+                color_map = {'🟢 On Target': '#28a745', '🟡 Slight Variance': '#ffc107', '🔴 High Variance': '#dc3545', '⚪ N/A': '#6c757d'}
+                fig = px.bar(status_counts, x='Status', y='Count', color='Status', color_discrete_map=color_map, text='Count')
+                fig.update_layout(showlegend=False, yaxis_title='Count', xaxis_title='')
+                st.plotly_chart(fig, use_container_width=True)
+        else:
             st.subheader("Total QTY Supplied by Region")
             if 'Region' in filtered_math_df.columns: st.bar_chart(filtered_math_df.groupby('Region')['Total QTY Supplied'].sum(), width="stretch")
-        with chart_col2:
-            st.subheader("Variance Status Distribution")
-            status_counts = filtered_math_df['Variance Status'].value_counts().reset_index()
-            status_counts.columns = ['Status', 'Count']
-            color_map = {'🟢 On Target': '#28a745', '🟡 Slight Variance': '#ffc107', '🔴 High Variance': '#dc3545', '⚪ N/A': '#6c757d'}
-            fig = px.bar(status_counts, x='Status', y='Count', color='Status', color_discrete_map=color_map, text='Count')
-            fig.update_layout(showlegend=False, yaxis_title='Count', xaxis_title='')
-            st.plotly_chart(fig, use_container_width=True)
+
         st.markdown("---")
-        st.subheader("📜 Site History & CPD Trend")
-        st.write("Select a site below to see its Estimated CPD history across all months.")
-        if 'Site ID' in df_math.columns:
-            history_site = st.selectbox("Select Site ID to view history:", sorted(df_math['Site ID'].unique().tolist()))
-            site_hist_df = df_math[df_math['Site ID'] == history_site].sort_values('Supply Date')
-            hist_cols = ['Supply Date', 'Type of supply', 'Total QTY Supplied', 'Estimated CPD', 'Approved CPD', 'CPD Variance', 'Variance Status']
-            final_hist_cols = [c for c in hist_cols if c in site_hist_df.columns]
-            st.dataframe(site_hist_df[final_hist_cols], hide_index=True, use_container_width=True)
-            if not site_hist_df.empty and 'Estimated CPD' in site_hist_df.columns:
-                chart_data = site_hist_df[['Supply Date', 'Estimated CPD', 'Approved CPD']].melt(id_vars='Supply Date', value_vars=['Estimated CPD', 'Approved CPD'], var_name='CPD Type', value_name='Value')
-                fig_hist = px.line(chart_data, x='Supply Date', y='Value', color='CPD Type', markers=True, title=f'CPD History for {history_site}')
-                st.plotly_chart(fig_hist, use_container_width=True)
+        
+        if st.session_state.role == 'Admin':
+            st.subheader("📜 Site History & CPD Trend")
+            st.write("Select a site below to see its Estimated CPD history across all months.")
+            if 'Site ID' in df_math.columns:
+                history_site = st.selectbox("Select Site ID to view history:", sorted(df_math['Site ID'].unique().tolist()))
+                site_hist_df = df_math[df_math['Site ID'] == history_site].sort_values('Supply Date')
+                hist_cols = ['Supply Date', 'Type of supply', 'Total QTY Supplied', 'Estimated CPD', 'Approved CPD', 'CPD Variance', 'Variance Status']
+                final_hist_cols = [c for c in hist_cols if c in site_hist_df.columns]
+                st.dataframe(site_hist_df[final_hist_cols], hide_index=True, use_container_width=True)
+                if not site_hist_df.empty and 'Estimated CPD' in site_hist_df.columns:
+                    chart_data = site_hist_df[['Supply Date', 'Estimated CPD', 'Approved CPD']].melt(id_vars='Supply Date', value_vars=['Estimated CPD', 'Approved CPD'], var_name='CPD Type', value_name='Value')
+                    fig_hist = px.line(chart_data, x='Supply Date', y='Value', color='CPD Type', markers=True, title=f'CPD History for {history_site}')
+                    st.plotly_chart(fig_hist, use_container_width=True)
+        else:
+            st.subheader(" Site Supply History")
+            st.write("Select a site below to see its supply history.")
+            if 'Site ID' in df_math.columns:
+                history_site = st.selectbox("Select Site ID to view history:", sorted(df_math['Site ID'].unique().tolist()))
+                site_hist_df = df_math[df_math['Site ID'] == history_site].sort_values('Supply Date')
+                # HIDE CPD COLUMNS FOR TEAM
+                hist_cols = ['Supply Date', 'Type of supply', 'Total QTY Supplied', 'Supply Alert', 'Bobtail number']
+                final_hist_cols = [c for c in hist_cols if c in site_hist_df.columns]
+                st.dataframe(site_hist_df[final_hist_cols], hide_index=True, use_container_width=True)
+
         st.markdown("---")
         st.subheader("📋 Current Status (Latest Record per Site)")
         df_latest = filtered_math_df.sort_values('Supply Date').drop_duplicates(subset=['Site ID'], keep='last')
-        display_cols = ['Site ID', 'Region', 'Cluster', 'Zones', 'Type of supply', 'Total QTY Supplied', 'Total QTY Before Supply', 'Approved CPD', 'Estimated CPD', 'CPD Variance', 'Variance Status', 'Supply Date', 'Estimated Next Supply Date', 'Supply Alert', 'Bobtail number']
+        
+        if st.session_state.role == 'Admin':
+            display_cols = ['Site ID', 'Region', 'Cluster', 'Zones', 'Type of supply', 'Total QTY Supplied', 'Total QTY Before Supply', 'Approved CPD', 'Estimated CPD', 'CPD Variance', 'Variance Status', 'Supply Date', 'Estimated Next Supply Date', 'Supply Alert', 'Bobtail number']
+        else:
+            # HIDE CPD COLUMNS FOR TEAM
+            display_cols = ['Site ID', 'Region', 'Cluster', 'Zones', 'Type of supply', 'Total QTY Supplied', 'Total QTY Before Supply', 'Supply Date', 'Estimated Next Supply Date', 'Supply Alert', 'Bobtail number']
+            
         final_cols = [c for c in display_cols if c in df_latest.columns]
         st.dataframe(df_latest[final_cols], width="stretch", hide_index=True)
 else:
