@@ -48,7 +48,7 @@ if 'logged_in' not in st.session_state or not st.session_state.logged_in:
 
 # --- 2. PAGE CONFIG ---
 st.set_page_config(page_title="Supply & CPD Tracker", layout="wide")
-st.title(" Supply & CPD Tracker App")
+st.title("📊 Supply & CPD Tracker App")
 
 if st.session_state.role == 'Admin': 
     st.sidebar.success("🔑 Logged in as Admin")
@@ -116,13 +116,12 @@ if db:
                 agg_dict = {k: v for k, v in agg_dict.items() if k in df_raw.columns}
                 df_math = df_raw.groupby(['Site ID', 'Supply Date']).agg(agg_dict).reset_index()
 
-        # Load Waybills
+        # Load Waybills & Calculate Truck Variances
         wb_docs = db.collection('waybills').stream()
         wb_data = [doc.to_dict() for doc in wb_docs]
         if wb_data:
             df_waybills = pd.DataFrame(wb_data)
             
-            # Handle both old 'Waybill Date' and new 'Trip Start Date'
             if 'Trip Start Date' in df_waybills.columns:
                 df_waybills['Trip Start Date'] = pd.to_datetime(df_waybills['Trip Start Date'], errors='coerce')
             elif 'Waybill Date' in df_waybills.columns:
@@ -136,10 +135,37 @@ if db:
                 if col in df_waybills.columns: 
                     df_waybills[col] = pd.to_numeric(df_waybills[col], errors='coerce').fillna(0.0)
             
-            # Calculate Variances for display
             if 'Mapped Sites' in df_waybills.columns and 'Supplied Sites' in df_waybills.columns:
                 df_waybills['Site Variance'] = df_waybills['Mapped Sites'] - df_waybills['Supplied Sites']
-                
+
+            # --- TRUCK-TO-TRUCK VARIANCE & DELIVERY DIFFERENCE LOGIC ---
+            # Sort by Truck and Date to ensure chronological order for history
+            df_waybills = df_waybills.sort_values(by=['Truck Number', 'Trip Start Date'])
+
+            # 1. Calculate Delivery Difference ((Loaded + Initial) - Supplied)
+            if 'Loaded QTY (L)' in df_waybills.columns and 'Supplied QTY (L)' in df_waybills.columns and 'Initial QTY (L)' in df_waybills.columns:
+                df_waybills['Delivery Difference (L)'] = (df_waybills['Loaded QTY (L)'] + df_waybills['Initial QTY (L)']) - df_waybills['Supplied QTY (L)']
+
+            # 2. Compare Current Initial QTY with Previous Remaining QTY for the same truck
+            df_waybills['Prev Remaining QTY (L)'] = df_waybills.groupby('Truck Number')['Remaining QTY (L)'].shift(1)
+
+            def check_truck_variance(row):
+                if pd.isnull(row['Prev Remaining QTY (L)']):
+                    return "First Trip"
+                if row['Prev Remaining QTY (L)'] == 0:
+                    return "N/A"
+
+                diff = abs(row['Initial QTY (L)'] - row['Prev Remaining QTY (L)'])
+                pct = (diff / row['Prev Remaining QTY (L)']) * 100
+
+                if pct > 3.0:
+                    return f"🚨 {pct:.1f}% Variance"
+                else:
+                    return "✅ OK"
+
+            df_waybills['Truck Variance Status'] = df_waybills.apply(check_truck_variance, axis=1)
+
+            # Sort back to descending date for display
             df_waybills = df_waybills.sort_values('Trip Start Date', ascending=False)
                 
         st.sidebar.info(f"📊 Loaded {len(df_raw)} supply records & {len(df_waybills)} waybills.")
@@ -226,7 +252,7 @@ elif input_method == "Edit Single Record":
                 new_type = st.text_input("Type of supply", value=str(row_data.get('Type of supply', '')))
                 col_btn1, col_btn2 = st.columns(2)
                 with col_btn1: save_changes = st.form_submit_button("✅ Save", type="primary")
-                with col_btn2: delete_record = st.form_submit_button("️ Delete", type="secondary")
+                with col_btn2: delete_record = st.form_submit_button("🗑️ Delete", type="secondary")
             if save_changes:
                 update_data = {'Approved CPD': float(new_cpd), 'Qty before supply Tank 1': float(new_q_b_t1), 'QTY supplied Tank 1': float(new_q_s_t1),
                                'Qty before supply Tank 2': float(new_q_b_t2), 'QTY supplied Tank 2': float(new_q_s_t2),
@@ -331,7 +357,7 @@ elif input_method == "Upload Excel File":
                     st.sidebar.success(f"✅ Successfully uploaded {count} rows!"); del st.session_state['file_to_upload']; st.rerun()
                 except Exception as e: st.sidebar.error(f"❌ Upload failed: {str(e)}")
 
-# --- 5.5 NEW: ADVANCED WAYBILL MANAGEMENT ---
+# --- 5.5 WAYBILL MANAGEMENT ---
 st.sidebar.markdown("---")
 st.sidebar.header("🚛 Waybill Management")
 waybill_action = st.sidebar.radio("Select Waybill Action", ["➕ Add New Waybill", "📋 View Recent Waybills"])
@@ -393,8 +419,8 @@ elif waybill_action == "📋 View Recent Waybills":
 # --- 6. ADMIN CONTROLS ---
 if st.session_state.role == 'Admin':
     st.sidebar.markdown("---")
-    st.sidebar.subheader(" Admin Controls")
-    if st.sidebar.button("️ Clear Database"): 
+    st.sidebar.subheader("🔑 Admin Controls")
+    if st.sidebar.button("🗑️ Clear Database"): 
         if st.sidebar.checkbox("Are you sure? This deletes everything permanently."):
             docs = db.collection('supplies').stream()
             for doc in docs: doc.reference.delete()
@@ -509,9 +535,7 @@ if not df_math.empty:
         
         urgent_supplies = filtered_math_df['Supply Alert'].apply(lambda x: 1 if 'CRITICAL' in str(x) or 'WARNING' in str(x) or 'OVERDUE' in str(x) else 0).sum()
         
-        # Waybill Metrics
         total_waybills = len(df_waybills)
-        total_dispatched = df_waybills['Loaded QTY (L)'].sum() if 'Loaded QTY (L)' in df_waybills.columns else 0.0
         
         if st.session_state.role == 'Admin':
             col1, col2, col3, col4, col5, col6 = st.columns(6)
@@ -530,7 +554,7 @@ if not df_math.empty:
             col5.metric("Waybills Logged", total_waybills)
         
         st.markdown("---")
-        st.subheader(" Sites by Zone")
+        st.subheader("📍 Sites by Zone")
         if 'Zones' in filtered_math_df.columns:
             z1, z2, z3 = st.columns(3)
             with z1: st.metric("Zone A1", filtered_math_df[filtered_math_df['Zones'] == 'A1']['Site ID'].nunique())
@@ -579,7 +603,7 @@ if not df_math.empty:
                     fig_hist = px.line(chart_data, x='Supply Date', y='Value', color='CPD Type', markers=True, title=f'CPD History for {history_site}')
                     st.plotly_chart(fig_hist, use_container_width=True)
         else:
-            st.subheader(" Site Supply History")
+            st.subheader("📜 Site Supply History")
             st.write("Select a site below to see its supply history.")
             if 'Site ID' in df_math.columns:
                 history_site = st.selectbox("Select Site ID to view history:", sorted(df_math['Site ID'].unique().tolist()))
@@ -600,11 +624,10 @@ if not df_math.empty:
         final_cols = [c for c in display_cols if c in df_latest.columns]
         st.dataframe(df_latest[final_cols], width="stretch", hide_index=True)
 
-        # --- NEW: ADVANCED WAYBILL TRACKER SECTION ---
+        # --- ADVANCED WAYBILL TRACKER SECTION ---
         st.markdown("---")
-        st.subheader("🚛 Waybill Tracker & Analysis")
+        st.subheader("🚛 Waybill Tracker & Truck Variance Analysis")
         if not df_waybills.empty:
-            # Filter waybills by Trip Start Date
             if 'Trip Start Date' in df_waybills.columns:
                 valid_wb_dates = df_waybills['Trip Start Date'].dropna()
                 if not valid_wb_dates.empty:
@@ -620,20 +643,29 @@ if not df_math.empty:
             if filtered_wb.empty:
                 st.info(f"No waybills logged for the selected date.")
             else:
-                # Show detailed comparison table
                 wb_cols_show = [
                     'Waybill Number', 'Truck Number', 'Driver Name', 
                     'Trip Start Date', 'Trip End Date',
-                    'Loaded QTY (L)', 'Loaded QTY (Kg)', 'Supplied QTY (L)', 'Remaining QTY (L)',
-                    'Mapped Sites', 'Supplied Sites', 'Site Variance'
+                    'Initial QTY (L)', 'Loaded QTY (L)', 'Loaded QTY (Kg)', 
+                    'Supplied QTY (L)', 'Remaining QTY (L)', 'Delivery Difference (L)',
+                    'Mapped Sites', 'Supplied Sites', 'Site Variance', 'Truck Variance Status'
                 ]
                 final_wb_show = [c for c in wb_cols_show if c in filtered_wb.columns]
-                st.dataframe(filtered_wb[final_wb_show], use_container_width=True, hide_index=True)
                 
-                # Waybill Summary for the selected day
+                # Highlighter for >3% Variance
+                def highlight_truck_var(val):
+                    if '🚨' in str(val): return 'background-color: #ffcccc; font-weight: bold;'
+                    elif '✅' in str(val): return 'background-color: #d4edda;'
+                    return ''
+
+                styled_wb = filtered_wb[final_wb_show].style
+                if 'Truck Variance Status' in final_wb_show:
+                    styled_wb = styled_wb.map(highlight_truck_var, subset=['Truck Variance Status'])
+                
+                st.dataframe(styled_wb, use_container_width=True, hide_index=True)
+                
                 w_col1, w_col2, w_col3, w_col4 = st.columns(4)
                 w_col1.metric("Total Trucks Dispatched", len(filtered_wb))
-                
                 if 'Loaded QTY (L)' in filtered_wb.columns:
                     w_col2.metric("Total Fuel Dispatched (L)", f"{filtered_wb['Loaded QTY (L)'].sum():,.2f} L")
                 if 'Loaded QTY (Kg)' in filtered_wb.columns:
