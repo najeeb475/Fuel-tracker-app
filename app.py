@@ -24,7 +24,7 @@ if controller.get('logged_in') == 'true':
 
 if 'logged_in' not in st.session_state or not st.session_state.logged_in:
     st.title("🔒 Access Portal")
-    tab1, tab2 = st.tabs(["👥 Team Access", "🔑 Admin Login"])
+    tab1, tab2 = st.tabs([" Team Access", "🔑 Admin Login"])
     with tab1:
         st.write("Load data, add waybills, and view basic supply metrics. (No password required)")
         if st.button("Enter as Team"):
@@ -139,7 +139,6 @@ if db:
                 df_waybills['Site Variance'] = df_waybills['Mapped Sites'] - df_waybills['Supplied Sites']
 
             # --- TRUCK-TO-TRUCK VARIANCE & DELIVERY DIFFERENCE LOGIC ---
-            # Sort by Truck and Date to ensure chronological order for history
             df_waybills = df_waybills.sort_values(by=['Truck Number', 'Trip Start Date'])
 
             # 1. Calculate Delivery Difference ((Loaded + Initial) - Supplied)
@@ -164,8 +163,6 @@ if db:
                     return "✅ OK"
 
             df_waybills['Truck Variance Status'] = df_waybills.apply(check_truck_variance, axis=1)
-
-            # Sort back to descending date for display
             df_waybills = df_waybills.sort_values('Trip Start Date', ascending=False)
                 
         st.sidebar.info(f"📊 Loaded {len(df_raw)} supply records & {len(df_waybills)} waybills.")
@@ -187,7 +184,7 @@ if input_method == "Manual Entry":
     with st.sidebar.form("manual_entry_form"):
         if not df_raw.empty and 'Site ID' in df_raw.columns:
             existing_sites = sorted(df_raw['Site ID'].dropna().unique().tolist())
-            site_choice = st.selectbox("Select Site", ["➕ New Site"] + existing_sites)
+            site_choice = st.selectbox("Select Site", [" New Site"] + existing_sites)
             if site_choice == "➕ New Site":
                 site_id = st.text_input("New Site ID"); region = st.text_input("Region"); cluster = st.text_input("Cluster")
                 zone = st.selectbox("Zones", ["A1", "A2", "A3"])
@@ -360,7 +357,7 @@ elif input_method == "Upload Excel File":
 # --- 5.5 WAYBILL MANAGEMENT ---
 st.sidebar.markdown("---")
 st.sidebar.header("🚛 Waybill Management")
-waybill_action = st.sidebar.radio("Select Waybill Action", ["➕ Add New Waybill", "📋 View Recent Waybills"])
+waybill_action = st.sidebar.radio("Select Waybill Action", [" Add New Waybill", "📋 View Recent Waybills"])
 
 if waybill_action == "➕ Add New Waybill":
     st.sidebar.subheader("Log Truck Waybill")
@@ -467,7 +464,7 @@ if not df_math.empty:
             app = row['Approved CPD']; var = row['CPD Variance']
             if app == 0: return "⚪ N/A"
             pct = abs(var) / app
-            if pct <= 0.05: return "🟢 On Target"
+            if pct <= 0.05: return " On Target"
             elif pct <= 0.15: return "🟡 Slight Variance"
             else: return "🔴 High Variance"
         df_math['Variance Status'] = df_math.apply(get_status, axis=1)
@@ -477,7 +474,7 @@ if not df_math.empty:
             if pd.isnull(next_date): return ""
             days_diff = (next_date - today).days
             if days_diff < 0: return "🚨 OVERDUE"
-            elif days_diff == 0: return "🔴 CRITICAL: Supply Today"
+            elif days_diff == 0: return " CRITICAL: Supply Today"
             elif days_diff <= 2: return f"🟡 WARNING: Supply in {days_diff} days"
             else: return ""
         df_math['Supply Alert'] = df_math['Estimated Next Supply Date'].apply(get_supply_alert)
@@ -534,7 +531,6 @@ if not df_math.empty:
                 high_variance_count = int((variance_pct > 0.15).sum())
         
         urgent_supplies = filtered_math_df['Supply Alert'].apply(lambda x: 1 if 'CRITICAL' in str(x) or 'WARNING' in str(x) or 'OVERDUE' in str(x) else 0).sum()
-        
         total_waybills = len(df_waybills)
         
         if st.session_state.role == 'Admin':
@@ -624,9 +620,9 @@ if not df_math.empty:
         final_cols = [c for c in display_cols if c in df_latest.columns]
         st.dataframe(df_latest[final_cols], width="stretch", hide_index=True)
 
-        # --- ADVANCED WAYBILL TRACKER SECTION ---
+        # --- WAYBILL TRACKER SECTION ---
         st.markdown("---")
-        st.subheader("🚛 Waybill Tracker & Truck Variance Analysis")
+        st.subheader(" Waybill Tracker & Truck Variance Analysis")
         if not df_waybills.empty:
             if 'Trip Start Date' in df_waybills.columns:
                 valid_wb_dates = df_waybills['Trip Start Date'].dropna()
@@ -637,8 +633,10 @@ if not df_math.empty:
                     filtered_wb = df_waybills[df_waybills['Trip Start Date'].dt.date == wb_filter_date]
                 else:
                     filtered_wb = df_waybills
+                    wb_filter_date = date.today()
             else:
                 filtered_wb = df_waybills
+                wb_filter_date = date.today()
             
             if filtered_wb.empty:
                 st.info(f"No waybills logged for the selected date.")
@@ -652,9 +650,8 @@ if not df_math.empty:
                 ]
                 final_wb_show = [c for c in wb_cols_show if c in filtered_wb.columns]
                 
-                # Highlighter for >3% Variance
                 def highlight_truck_var(val):
-                    if '🚨' in str(val): return 'background-color: #ffcccc; font-weight: bold;'
+                    if '' in str(val): return 'background-color: #ffcccc; font-weight: bold;'
                     elif '✅' in str(val): return 'background-color: #d4edda;'
                     return ''
 
@@ -676,6 +673,54 @@ if not df_math.empty:
                     w_col4.metric("Sites: Mapped vs Supplied", f"{total_supplied_wb} / {total_mapped}")
         else:
             st.info("No waybills have been logged yet. Use the sidebar to add the first one!")
+            wb_filter_date = date.today()
+            filtered_wb = pd.DataFrame()
+
+        # --- EXPORT DATA SECTION (For Both Admin & Team) ---
+        st.markdown("---")
+        st.subheader("📥 Export Data to Excel")
+        st.write("Download the currently filtered data for your records.")
+        
+        col_exp1, col_exp2 = st.columns(2)
+        
+        with col_exp1:
+            st.markdown("**1. Site Supply Data**")
+            export_supply_df = filtered_math_df.copy()
+            if 'Supply Date' in export_supply_df.columns:
+                export_supply_df['Supply Date'] = export_supply_df['Supply Date'].dt.strftime('%Y-%m-%d')
+            
+            output_supply = io.BytesIO()
+            with pd.ExcelWriter(output_supply, engine='openpyxl') as writer:
+                export_supply_df.to_excel(writer, index=False, sheet_name='Site Supplies')
+            
+            st.download_button(
+                label="📥 Download Supply Data (.xlsx)",
+                data=output_supply.getvalue(),
+                file_name=f"site_supplies_{start_date}_to_{end_date}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+        with col_exp2:
+            st.markdown("**2. Waybill Data**")
+            if not df_waybills.empty and not filtered_wb.empty:
+                export_wb_df = filtered_wb.copy()
+                if 'Trip Start Date' in export_wb_df.columns:
+                    export_wb_df['Trip Start Date'] = export_wb_df['Trip Start Date'].dt.strftime('%Y-%m-%d')
+                if 'Trip End Date' in export_wb_df.columns:
+                    export_wb_df['Trip End Date'] = export_wb_df['Trip End Date'].dt.strftime('%Y-%m-%d')
+                    
+                output_wb = io.BytesIO()
+                with pd.ExcelWriter(output_wb, engine='openpyxl') as writer:
+                    export_wb_df.to_excel(writer, index=False, sheet_name='Waybills')
+                
+                st.download_button(
+                    label=" Download Waybill Data (.xlsx)",
+                    data=output_wb.getvalue(),
+                    file_name=f"waybills_{wb_filter_date}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            else:
+                st.info("No waybill data available to download.")
 
 else:
     st.info("👆 Database is empty. Use the sidebar to upload an Excel file or add manual entries!")
