@@ -1473,14 +1473,47 @@ if not df_math.empty:
 
         with col_exp1:
             st.markdown("**1. Site Supply Data**")
+            st.caption(
+                "The download has one row per supply record in 'Site Supplies', "
+                "and a 'Site Totals' sheet that already adds up the litres and MT delivered to each site."
+            )
             drop_cols = ["_status_key"] if is_admin else ["_status_key", "Approved CPD"]
             export_supply_df = fmt_date_cols(filtered_math_df, ["Supply Date"]).drop(
                 columns=drop_cols, errors="ignore"
             )
 
+            site_agg = {
+                "Supply Records": ("Supply Date", "count"),
+                "First Supply": ("Supply Date", "min"),
+                "Last Supply": ("Supply Date", "max"),
+                "Total Supplied (L)": ("Total QTY Supplied", "sum"),
+                "Total Supplied (MT)": ("Total QTY Supplied (MT)", "sum"),
+            }
+            for cname in ["Region", "Cluster", "Zones", "Type of supply"]:
+                if cname in filtered_math_df.columns:
+                    site_agg[cname] = (cname, "last")
+
+            site_totals_df = (
+                filtered_math_df.sort_values("Supply Date")
+                .groupby("Site ID", dropna=False)
+                .agg(**site_agg)
+                .reset_index()
+                .sort_values("Total Supplied (L)", ascending=False)
+            )
+            site_totals_df["Total Supplied (L)"] = site_totals_df["Total Supplied (L)"].round(2)
+            site_totals_df["Total Supplied (MT)"] = site_totals_df["Total Supplied (MT)"].round(2)
+            site_total_order = ["Site ID"] + [
+                c for c in ["Region", "Cluster", "Zones", "Type of supply"] if c in site_totals_df.columns
+            ] + ["Supply Records", "First Supply", "Last Supply",
+                 "Total Supplied (L)", "Total Supplied (MT)"]
+            site_totals_df = fmt_date_cols(
+                site_totals_df[site_total_order], ["First Supply", "Last Supply"]
+            )
+
             output_supply = io.BytesIO()
             with pd.ExcelWriter(output_supply, engine="openpyxl") as writer:
                 export_supply_df.to_excel(writer, index=False, sheet_name="Site Supplies")
+                site_totals_df.to_excel(writer, index=False, sheet_name="Site Totals")
                 if is_admin and not filtered_sites.empty:
                     fmt_date_cols(filtered_sites.drop(columns=["Supply Cohort Key"], errors="ignore"),
                                   ["Last Supply Date"]).to_excel(
