@@ -37,6 +37,7 @@ COHORT_COLORS = {
 }
 
 COOKIE_TTL_SECONDS = 30 * 24 * 60 * 60
+LITRES_PER_MT = 1960  # 1 Metric Ton of fuel = 1,960 litres
 SUPPLY_NUM_COLS = [
     "Qty before supply Tank 1",
     "QTY supplied Tank 1",
@@ -1028,6 +1029,7 @@ def cohort_comparison(sites_df, recent_days):
             "Avg Days Between Supplies": round(sub["Avg Days Between Supplies"].mean(), 1),
             "Avg Days Since Supply": round(sub["Days Since Last Supply"].mean(), 1),
             "Total Supplied (L)": round(sub["Total QTY Supplied"].sum(), 1),
+            "Total Supplied (MT)": round(sub["Total QTY Supplied"].sum() / LITRES_PER_MT, 2),
         })
     return pd.DataFrame(rows)
 
@@ -1041,7 +1043,7 @@ is_admin = role == "Admin"
 TEAM_WAYBILL_COLS = [
     "Waybill Number", "Truck Number", "Driver Name", "Trip Start Date", "Trip End Date",
     "Initial QTY (L)", "Loaded QTY (L)", "Loaded QTY (Kg)", "Supplied QTY (L)",
-    "Remaining QTY (L)", "Mapped Sites", "Supplied Sites",
+    "Supplied QTY (MT)", "Remaining QTY (L)", "Mapped Sites", "Supplied Sites",
 ]
 
 if not df_math.empty:
@@ -1059,6 +1061,16 @@ if not df_math.empty:
         # or variance value is computed, let alone rendered.
         recent_window, due_soon_window = 14, 15
         df_sites = pd.DataFrame()
+
+    # Both roles need the litre total and its Metric Ton equivalent. The
+    # consumption model adds the litre column for Admin; Team gets it from the
+    # stored tank quantities.
+    if "Total QTY Supplied" not in df_math.columns:
+        df_math["Total QTY Supplied"] = (
+            num_col(df_math, "QTY supplied Tank 1")
+            + num_col(df_math, "QTY supplied Tank 2")
+        )
+    df_math["Total QTY Supplied (MT)"] = df_math["Total QTY Supplied"] / LITRES_PER_MT
 
     st.sidebar.header("🔍 Filters")
     valid_dates = df_math["Supply Date"].dropna()
@@ -1091,14 +1103,6 @@ if not df_math.empty:
         mask_math = apply_eq(mask_math, df_math, cname, value)
     filtered_math_df = df_math[mask_math].copy()
 
-    if not is_admin:
-        # The consumption model normally adds this column; team gets the same
-        # total straight from the stored tank quantities instead.
-        filtered_math_df["Total QTY Supplied"] = (
-            num_col(filtered_math_df, "QTY supplied Tank 1")
-            + num_col(filtered_math_df, "QTY supplied Tank 2")
-        )
-
     mask_raw = in_window(df_raw, "Supply Date", start_date, end_date)
     for cname, value in filter_map.items():
         mask_raw = apply_eq(mask_raw, df_raw, cname, value)
@@ -1117,6 +1121,7 @@ if not df_math.empty:
         t1 = pd.to_numeric(get_col(filtered_raw_df, "QTY supplied Tank 1"), errors="coerce").fillna(0)
         t2 = pd.to_numeric(get_col(filtered_raw_df, "QTY supplied Tank 2"), errors="coerce").fillna(0)
         total_supplied = float(t1.sum() + t2.sum())
+        total_supplied_mt = total_supplied / LITRES_PER_MT
         total_waybills = len(df_waybills)
 
         if is_admin:
@@ -1135,33 +1140,53 @@ if not df_math.empty:
             else:
                 urgent_supplies = 0
 
-            col1, col2, col3, col4, col5, col6 = st.columns(6)
+            col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
             col1.metric("Total Sites Tracked", total_sites_tracked)
             col2.metric("Sites Supplied (window)", sites_supplied)
-            col3.metric("Total Fuel Supplied", f"{total_supplied:,.2f} L")
-            col4.metric("High Variance", high_variance_count)
-            col5.metric("Urgent Sites", urgent_supplies)
-            col6.metric("Waybills Logged", total_waybills)
+            col3.metric("Total Fuel Supplied (L)", f"{total_supplied:,.2f} L")
+            col4.metric("Total Fuel Supplied (MT)", f"{total_supplied_mt:,.2f} MT",
+                        help=f"Litres ÷ {LITRES_PER_MT:,}")
+            col5.metric("High Variance", high_variance_count)
+            col6.metric("Urgent Sites", urgent_supplies)
+            col7.metric("Waybills Logged", total_waybills)
         else:
-            col1, col2, col3 = st.columns(3)
+            col1, col2, col3, col4 = st.columns(4)
             col1.metric("Sites Supplied (window)", sites_supplied)
-            col2.metric("Total Fuel Supplied", f"{total_supplied:,.2f} L")
-            col3.metric("Waybills Logged", total_waybills)
+            col2.metric("Total Fuel Supplied (L)", f"{total_supplied:,.2f} L")
+            col3.metric("Total Fuel Supplied (MT)", f"{total_supplied_mt:,.2f} MT",
+                        help=f"Litres ÷ {LITRES_PER_MT:,}")
+            col4.metric("Waybills Logged", total_waybills)
             st.caption(
-                "Team access shows how many sites were supplied and the fuel delivered. "
+                "Team access shows how many sites were supplied and the fuel delivered in litres and "
+                f"Metric Tonnes (1 MT = {LITRES_PER_MT:,} L). "
                 "Consumption, CPD, projection and variance analysis are Admin-only."
             )
 
         st.markdown("---")
-        st.subheader("📍 Sites by Zone")
+        st.subheader(f"📍 Sites & Fuel by Zone (1 MT = {LITRES_PER_MT:,} L)")
         if "Zones" in filtered_math_df.columns:
-            z1, z2, z3 = st.columns(3)
-            with z1:
-                st.metric("Zone A1", filtered_math_df[filtered_math_df["Zones"] == "A1"]["Site ID"].nunique())
-            with z2:
-                st.metric("Zone A2", filtered_math_df[filtered_math_df["Zones"] == "A2"]["Site ID"].nunique())
-            with z3:
-                st.metric("Zone A3", filtered_math_df[filtered_math_df["Zones"] == "A3"]["Site ID"].nunique())
+            zone_tbl = (
+                filtered_math_df.groupby("Zones")
+                .agg(Sites=("Site ID", "nunique"),
+                     **{"Supplied (L)": ("Total QTY Supplied", "sum")})
+                .reset_index()
+                .rename(columns={"Zones": "Zone"})
+                .sort_values("Zone")
+            )
+            zone_tbl["Supplied (L)"] = zone_tbl["Supplied (L)"].round(2)
+            zone_tbl["Supplied (MT)"] = (zone_tbl["Supplied (L)"] / LITRES_PER_MT).round(2)
+            zone_tbl = pd.concat([
+                zone_tbl,
+                pd.DataFrame([{
+                    "Zone": "Total",
+                    "Sites": filtered_math_df["Site ID"].nunique(),
+                    "Supplied (L)": round(float(filtered_math_df["Total QTY Supplied"].sum()), 2),
+                    "Supplied (MT)": round(
+                        float(filtered_math_df["Total QTY Supplied"].sum()) / LITRES_PER_MT, 2
+                    ),
+                }]),
+            ], ignore_index=True)
+            st.dataframe(zone_tbl, use_container_width=True, hide_index=True)
 
         st.markdown("---")
         st.subheader("🚛 Sites by Supply Type")
@@ -1174,12 +1199,17 @@ if not df_math.empty:
                         st.metric(str(stype).title(), count)
         st.markdown("---")
 
+        region_unit = st.radio("Region chart unit", ["Litres (L)", "Metric Tonnes (MT)"],
+                               horizontal=True, key="region_chart_unit")
+        region_col = "Total QTY Supplied" if region_unit.startswith("Litres") else "Total QTY Supplied (MT)"
+        region_title = f"Total QTY Supplied by Region ({region_unit})"
+
         if is_admin:
             chart_col1, chart_col2 = st.columns(2)
             with chart_col1:
-                st.subheader("Total QTY Supplied by Region")
+                st.subheader(region_title)
                 if "Region" in filtered_math_df.columns:
-                    st.bar_chart(filtered_math_df.groupby("Region")["Total QTY Supplied"].sum(),
+                    st.bar_chart(filtered_math_df.groupby("Region")[region_col].sum(),
                                  use_container_width=True)
             with chart_col2:
                 st.subheader("Variance Status Distribution")
@@ -1194,9 +1224,9 @@ if not df_math.empty:
                 fig.update_layout(showlegend=False, yaxis_title="Count", xaxis_title="")
                 st.plotly_chart(fig, use_container_width=True)
         else:
-            st.subheader("Total QTY Supplied by Region")
+            st.subheader(region_title)
             if "Region" in filtered_math_df.columns:
-                st.bar_chart(filtered_math_df.groupby("Region")["Total QTY Supplied"].sum(),
+                st.bar_chart(filtered_math_df.groupby("Region")[region_col].sum(),
                              use_container_width=True)
 
         # ---------- 7.5 CONSUMPTION ANALYSIS: RECENT vs PAST SUPPLY ----------
@@ -1313,11 +1343,13 @@ if not df_math.empty:
         if is_admin:
             history_site = st.selectbox("Select Site ID to view history:", sorted(df_math["Site ID"].unique().tolist()))
             site_hist_df = df_math[df_math["Site ID"] == history_site].sort_values("Supply Date")
-            hist_cols = ["Supply Date", "Type of supply", "Total QTY Supplied", "Total_Consumed",
-                         "Days_Diff", "Estimated CPD", "Approved CPD", "CPD Variance",
+            hist_cols = ["Supply Date", "Type of supply", "Total QTY Supplied", "Total QTY Supplied (MT)",
+                         "Total_Consumed", "Days_Diff", "Estimated CPD", "Approved CPD", "CPD Variance",
                          "Variance Status", "Reading Check"]
-            st.dataframe(site_hist_df[[c for c in hist_cols if c in site_hist_df.columns]],
-                         hide_index=True, use_container_width=True)
+            hist_view = site_hist_df[[c for c in hist_cols if c in site_hist_df.columns]].copy()
+            if "Total QTY Supplied (MT)" in hist_view.columns:
+                hist_view["Total QTY Supplied (MT)"] = hist_view["Total QTY Supplied (MT)"].round(2)
+            st.dataframe(hist_view, hide_index=True, use_container_width=True)
             if not site_hist_df.empty:
                 chart_data = site_hist_df[["Supply Date", "Estimated CPD", "Approved CPD"]].melt(
                     id_vars="Supply Date", value_vars=["Estimated CPD", "Approved CPD"],
@@ -1333,10 +1365,12 @@ if not df_math.empty:
                 num_col(site_hist_df, "QTY supplied Tank 1")
                 + num_col(site_hist_df, "QTY supplied Tank 2")
             )
+            site_hist_df["Total QTY Supplied (MT)"] = site_hist_df["Total QTY Supplied"] / LITRES_PER_MT
             hist_cols = ["Supply Date", "Type of supply", "QTY supplied Tank 1", "QTY supplied Tank 2",
-                         "Total QTY Supplied", "Bobtail number"]
-            st.dataframe(site_hist_df[[c for c in hist_cols if c in site_hist_df.columns]],
-                         hide_index=True, use_container_width=True)
+                         "Total QTY Supplied", "Total QTY Supplied (MT)", "Bobtail number"]
+            hist_view = site_hist_df[[c for c in hist_cols if c in site_hist_df.columns]].copy()
+            hist_view["Total QTY Supplied (MT)"] = hist_view["Total QTY Supplied (MT)"].round(2)
+            st.dataframe(hist_view, hide_index=True, use_container_width=True)
 
         st.markdown("---")
         st.subheader("📋 Current Status (Latest Record per Site)")
@@ -1344,16 +1378,20 @@ if not df_math.empty:
 
         if is_admin:
             display_cols = ["Site ID", "Region", "Cluster", "Zones", "Type of supply", "Total QTY Supplied",
+                            "Total QTY Supplied (MT)",
                             "Total QTY Before Supply", "Approved CPD", "Estimated CPD", "CPD Variance",
                             "Variance Status", "Supply Date", "Estimated Next Supply Date", "Supply Alert",
                             "Bobtail number"]
         else:
             display_cols = ["Site ID", "Region", "Cluster", "Zones", "Type of supply",
                             "QTY supplied Tank 1", "QTY supplied Tank 2", "Total QTY Supplied",
+                            "Total QTY Supplied (MT)",
                             "Supply Date", "Bobtail number"]
 
-        st.dataframe(df_latest[[c for c in display_cols if c in df_latest.columns]],
-                     use_container_width=True, hide_index=True)
+        status_view_df = df_latest[[c for c in display_cols if c in df_latest.columns]].copy()
+        if "Total QTY Supplied (MT)" in status_view_df.columns:
+            status_view_df["Total QTY Supplied (MT)"] = status_view_df["Total QTY Supplied (MT)"].round(2)
+        st.dataframe(status_view_df, use_container_width=True, hide_index=True)
 
         # ---------- WAYBILL TRACKER ----------
         st.markdown("---")
@@ -1373,13 +1411,21 @@ if not df_math.empty:
             filtered_wb = pd.DataFrame()
             wb_filter_date = date.today()
 
+        if not filtered_wb.empty and "Supplied QTY (L)" in filtered_wb.columns:
+            filtered_wb = filtered_wb.copy()
+            filtered_wb["Supplied QTY (MT)"] = (
+                pd.to_numeric(filtered_wb["Supplied QTY (L)"], errors="coerce").fillna(0)
+                / LITRES_PER_MT
+            ).round(2)
+
         if not df_waybills.empty:
             if filtered_wb.empty:
                 st.info("No waybills logged for the selected date.")
             else:
                 wb_cols_show = ["Waybill Number", "Truck Number", "Driver Name", "Trip Start Date",
                                 "Trip End Date", "Initial QTY (L)", "Loaded QTY (L)", "Loaded QTY (Kg)",
-                                "Supplied QTY (L)", "Remaining QTY (L)", "Delivery Difference (L)",
+                                "Supplied QTY (L)", "Supplied QTY (MT)", "Remaining QTY (L)",
+                                "Delivery Difference (L)",
                                 "Prev Remaining QTY (L)", "Mapped Sites", "Supplied Sites",
                                 "Site Variance", "Truck Variance Status"]
                 if is_admin:
@@ -1402,16 +1448,19 @@ if not df_math.empty:
 
                 st.dataframe(styled_wb, use_container_width=True, hide_index=True)
 
-                w_col1, w_col2, w_col3, w_col4 = st.columns(4)
+                w_col1, w_col2, w_col3, w_col4, w_col5 = st.columns(5)
                 w_col1.metric("Total Trucks Dispatched", len(filtered_wb))
                 if "Loaded QTY (L)" in filtered_wb.columns:
-                    w_col2.metric("Total Fuel Dispatched (L)", f"{filtered_wb['Loaded QTY (L)'].sum():,.2f} L")
+                    loaded_l = float(filtered_wb["Loaded QTY (L)"].sum())
+                    w_col2.metric("Total Fuel Dispatched (L)", f"{loaded_l:,.2f} L")
+                    w_col3.metric("Total Fuel Dispatched (MT)", f"{loaded_l / LITRES_PER_MT:,.2f} MT",
+                                  help=f"Litres ÷ {LITRES_PER_MT:,}")
                 if "Loaded QTY (Kg)" in filtered_wb.columns:
-                    w_col3.metric("Total Fuel Dispatched (Kg)", f"{filtered_wb['Loaded QTY (Kg)'].sum():,.2f} Kg")
+                    w_col4.metric("Total Fuel Dispatched (Kg)", f"{filtered_wb['Loaded QTY (Kg)'].sum():,.2f} Kg")
                 if is_admin and "Supplied Sites" in filtered_wb.columns and "Mapped Sites" in filtered_wb.columns:
                     total_mapped = int(filtered_wb["Mapped Sites"].sum())
                     total_supplied_wb = int(filtered_wb["Supplied Sites"].sum())
-                    w_col4.metric("Sites: Mapped vs Supplied", f"{total_supplied_wb} / {total_mapped}")
+                    w_col5.metric("Sites: Mapped vs Supplied", f"{total_supplied_wb} / {total_mapped}")
         else:
             st.info("No waybills have been logged yet. Use the sidebar to add the first one!")
 
