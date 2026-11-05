@@ -37,6 +37,7 @@ COHORT_COLORS = {
 }
 
 COOKIE_TTL_SECONDS = 30 * 24 * 60 * 60
+APP_VERSION = "2026-11-05 MT + site totals + zone cycles"
 LITRES_PER_MT = 1960  # 1 Metric Ton of fuel = 1,960 litres
 SUPPLY_NUM_COLS = [
     "Qty before supply Tank 1",
@@ -294,6 +295,8 @@ if st.sidebar.button("Logout"):
     cookie_delete("logged_in")
     cookie_delete("role")
     st.rerun()
+
+st.sidebar.caption(f"App version: {APP_VERSION}")
 
 
 # ---------- 3. LOAD DATA (SUPPLIES & WAYBILLS) ----------
@@ -1168,8 +1171,14 @@ if not df_math.empty:
         st.markdown("---")
         st.subheader(f"📍 Sites & Fuel by Zone (1 MT = {LITRES_PER_MT:,} L)")
         if "Zones" in filtered_math_df.columns:
+            # Records without a zone were previously dropped by groupby, which
+            # made whole supply cycles disappear. Keep them as "Unassigned".
+            zone_source = filtered_math_df.copy()
+            zone_source["Zones"] = (
+                zone_source["Zones"].fillna("Unassigned").astype(str).str.strip().replace("", "Unassigned")
+            )
             zone_tbl = (
-                filtered_math_df.groupby("Zones")
+                zone_source.groupby("Zones")
                 .agg(Sites=("Site ID", "nunique"),
                      **{"Supplied (L)": ("Total QTY Supplied", "sum")})
                 .reset_index()
@@ -1191,40 +1200,30 @@ if not df_math.empty:
             ], ignore_index=True)
             st.dataframe(zone_tbl, use_container_width=True, hide_index=True)
 
-            if "Supply Cycle" in filtered_math_df.columns:
-                st.markdown("**Fuel supplied by zone and supply cycle**")
-                zone_cycle_unit = st.radio(
-                    "Zone cycle unit", ["Litres (L)", "Metric Tonnes (MT)"],
-                    horizontal=True, key="zone_cycle_unit",
-                )
-                zone_cycle_col = (
-                    "Total QTY Supplied" if zone_cycle_unit.startswith("Litres")
-                    else "Total QTY Supplied (MT)"
-                )
-                cycle_df = filtered_math_df.dropna(subset=["Zones", "Supply Cycle"])
-                if cycle_df.empty:
+            if "Supply Cycle" in zone_source.columns:
+                st.markdown("**Fuel supplied by zone and supply cycle (MT)**")
+                cycle_df = zone_source.dropna(subset=["Supply Cycle"])
+                cycle_months = pd.to_datetime(cycle_df["Supply Date"], errors="coerce").dropna().dt.to_period("M")
+                if cycle_df.empty or cycle_months.empty:
                     st.info("No dated supplies to split by supply cycle for these filters.")
                 else:
-                    cycle_order = (
-                        cycle_df.assign(
-                            _month=pd.to_datetime(cycle_df["Supply Date"], errors="coerce").dt.to_period("M")
-                        )
-                        .dropna(subset=["_month"])
-                        .groupby("Supply Cycle")["_month"].min()
-                        .sort_values()
-                        .index.tolist()
-                    )
+                    # Every month between the first and last supply is shown, so a
+                    # month with no recorded supply appears as 0 instead of vanishing.
+                    cycle_order = [
+                        p.strftime("%b %Y")
+                        for p in pd.period_range(cycle_months.min(), cycle_months.max(), freq="M")
+                    ]
                     zone_cycle = pd.pivot_table(
                         cycle_df, index="Zones", columns="Supply Cycle",
-                        values=zone_cycle_col, aggfunc="sum", fill_value=0,
-                    )
-                    zone_cycle = zone_cycle.reindex(
-                        columns=[c for c in cycle_order if c in zone_cycle.columns]
-                    )
+                        values="Total QTY Supplied (MT)", aggfunc="sum", fill_value=0,
+                    ).reindex(columns=cycle_order, fill_value=0)
                     zone_cycle["Total"] = zone_cycle.sum(axis=1)
                     zone_cycle.loc["Total"] = zone_cycle.sum()
                     zone_cycle = zone_cycle.round(2).reset_index().rename(columns={"Zones": "Zone"})
-                    st.caption(f"Monthly supply cycles from the selected date range. Unit: {zone_cycle_unit}.")
+                    st.caption(
+                        f"Monthly supply cycles from Supply Date. Values are Metric Tonnes "
+                        f"(1 MT = {LITRES_PER_MT:,} L); records without a zone are shown as Unassigned."
+                    )
                     st.dataframe(zone_cycle, use_container_width=True, hide_index=True)
 
         st.markdown("---")
@@ -1521,9 +1520,9 @@ if not df_math.empty:
         with col_exp1:
             st.markdown("**1. Site Supply Data**")
             st.caption(
-                "The download has one row per supply record in 'Site Supplies', plus "
-                "'Site Total Supplied (L)' and '(MT)' columns on every row, and a 'Site Totals' "
-                "sheet with one row per site."
+                "The download has one row per supply record in 'Site Supplies', with "
+                "'Site Total Supplied (L)' and '(MT)' next to Site ID on every row, plus a "
+                "'Site Totals' sheet with one row per site."
             )
             drop_cols = ["_status_key"] if is_admin else ["_status_key", "Approved CPD"]
             export_supply_df = fmt_date_cols(filtered_math_df, ["Supply Date"]).drop(
@@ -1536,8 +1535,8 @@ if not df_math.empty:
                 export_supply_df["Site Total Supplied (MT)"] = (site_total_l / LITRES_PER_MT).round(2)
                 export_cols = list(export_supply_df.columns)
                 insert_at = (
-                    export_cols.index("Total QTY Supplied (MT)") + 1
-                    if "Total QTY Supplied (MT)" in export_cols else len(export_cols)
+                    export_cols.index("Site ID") + 1
+                    if "Site ID" in export_cols else len(export_cols)
                 )
                 new_cols = ["Site Total Supplied (L)", "Site Total Supplied (MT)"]
                 export_cols = [c for c in export_cols if c not in new_cols]
@@ -1577,13 +1576,18 @@ if not df_math.empty:
             with pd.ExcelWriter(output_supply, engine="openpyxl") as writer:
                 export_supply_df.to_excel(writer, index=False, sheet_name="Site Supplies")
                 site_totals_df.to_excel(writer, index=False, sheet_name="Site Totals")
+                pd.DataFrame({
+                    "Item": ["App version", "Report generated", "Date range", "Litres per MT"],
+                    "Value": [APP_VERSION, datetime.now().strftime("%Y-%m-%d %H:%M"),
+                              f"{start_date} to {end_date}", LITRES_PER_MT],
+                }).to_excel(writer, index=False, sheet_name="Report Info")
                 if is_admin and not filtered_sites.empty:
                     fmt_date_cols(filtered_sites.drop(columns=["Supply Cohort Key"], errors="ignore"),
                                   ["Last Supply Date"]).to_excel(
                         writer, index=False, sheet_name="Consumption Status")
 
             st.download_button(
-                label="📥 Download Supply Data (.xlsx)",
+                label="📥 Download Site Supply Data (.xlsx)",
                 data=output_supply.getvalue(),
                 file_name=f"site_supplies_{start_date}_to_{end_date}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
