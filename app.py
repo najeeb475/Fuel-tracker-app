@@ -37,7 +37,7 @@ COHORT_COLORS = {
 }
 
 COOKIE_TTL_SECONDS = 30 * 24 * 60 * 60
-APP_VERSION = "2026-11-05 MT + site totals + zone cycles"
+APP_VERSION = "2026-11-05b cycle totals + type-keyed upload"
 LITRES_PER_MT = 1960  # 1 Metric Ton of fuel = 1,960 litres
 SUPPLY_NUM_COLS = [
     "Qty before supply Tank 1",
@@ -101,6 +101,43 @@ def to_date_column(series):
     if getattr(out.dt, "tz", None) is not None:
         out = out.dt.tz_localize(None)
     return out
+
+
+MONTH_ABBR = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+              "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+CYCLE_MONTHS = {name.lower(): num for num, name in enumerate(MONTH_ABBR) if num}
+
+
+def supply_cycle_parts(dates, types):
+    """Supply cycle is the month named in 'Type of supply' (for example
+    'Oct 3rd Supply'), because a cycle can be delivered in the next month.
+    When the type carries no month, the supply date's month is used."""
+    dt = pd.to_datetime(dates, errors="coerce")
+    if isinstance(types, pd.Series):
+        text = types.fillna("").astype(str).str.lower()
+    else:
+        text = pd.Series("", index=dt.index)
+    named = text.str.extract(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)", expand=False)
+    month = named.map(CYCLE_MONTHS).fillna(dt.dt.month)
+    year = dt.dt.year.mask((month == 12) & (dt.dt.month == 1), dt.dt.year - 1)
+    labels = pd.Series(pd.NA, index=dt.index, dtype="object")
+    valid = month.notna() & year.notna()
+    if valid.any():
+        labels.loc[valid] = [
+            f"{MONTH_ABBR[int(m)]} {int(y)}" for m, y in zip(month[valid], year[valid])
+        ]
+    sort_key = (year * 100 + month).astype("float64")
+    return labels, sort_key
+
+
+def supply_upsert_key(site_id, supply_day, type_value, cycle_label):
+    """Re-uploading a cycle updates its rows instead of adding duplicates."""
+    type_text = " ".join(str(type_value if type_value is not None else "").split()).lower()
+    if pd.isnull(supply_day):
+        return (str(site_id), "date", None)
+    if type_text and type_text != "nan" and pd.notna(cycle_label):
+        return (str(site_id), type_text, str(cycle_label))
+    return (str(site_id), "date", supply_day.date())
 
 
 def get_col(df, name, fill=np.nan):
@@ -489,19 +526,30 @@ if input_method == "Manual Entry":
                 }
                 existing_id = None
                 if not df_raw.empty and {"Site ID", "Supply Date", "doc_id"} <= set(df_raw.columns):
-                    same_day = df_raw[
-                        (df_raw["Site ID"].astype(str) == record["Site ID"])
-                        & (df_raw["Supply Date"].dt.date == supply_date)
-                    ]
-                    if not same_day.empty:
-                        existing_id = same_day.iloc[0]["doc_id"]
+                    raw_types = df_raw["Type of supply"] if "Type of supply" in df_raw.columns else pd.Series("", index=df_raw.index)
+                    raw_cycles, _ = supply_cycle_parts(df_raw["Supply Date"], raw_types)
+                    new_cycle, _ = supply_cycle_parts(
+                        pd.Series([pd.Timestamp(supply_date)]),
+                        pd.Series([record["Type of supply"]]),
+                    )
+                    wanted = supply_upsert_key(
+                        record["Site ID"], pd.Timestamp(supply_date),
+                        record["Type of supply"], new_cycle.iloc[0],
+                    )
+                    for site, day, type_value, cycle, doc in zip(
+                        df_raw["Site ID"].astype(str), df_raw["Supply Date"],
+                        raw_types, raw_cycles, df_raw["doc_id"],
+                    ):
+                        if pd.notnull(day) and supply_upsert_key(site, day, type_value, cycle) == wanted:
+                            existing_id = doc
+                            break
 
                 if existing_id:
                     if st.session_state.role != "Admin":
                         # Team may correct quantities but not the approved target.
                         record.pop("Approved CPD", None)
                     db.collection("supplies").document(str(existing_id)).update(record)
-                    st.success("✅ This site already had a record for that date — it was updated, no duplicate created.")
+                    st.success("✅ This site already had this supply type in this cycle — it was updated, no duplicate created.")
                 else:
                     db.collection("supplies").add(record)
                     st.success("✅ Saved successfully!")
@@ -607,6 +655,10 @@ elif input_method == "Bulk Edit (Spreadsheet)":
 
 elif input_method == "Upload Excel File":
     st.sidebar.subheader("Upload Excel to Database")
+    st.sidebar.caption(
+        "Safe to re-upload. Each supply is matched on Site ID + Type of supply + "
+        "Supply Cycle; an existing match is updated and only new supplies are added."
+    )
     uploaded_file = st.sidebar.file_uploader("Choose your Excel or CSV file", type=["xlsx", "csv"])
     if uploaded_file is not None:
         st.session_state["file_to_upload"] = uploaded_file
@@ -680,11 +732,58 @@ elif input_method == "Upload Excel File":
                         temp_df["Supply Date"] = pd.NaT
                     temp_df["__date__"] = to_date_column(temp_df["Supply Date"])
 
+                    temp_df["__cycle__"], _ = supply_cycle_parts(
+                        temp_df["__date__"], temp_df["Type of supply"]
+                    )
+                    temp_df["__key__"] = [
+                        supply_upsert_key(site, day, type_value, cycle)
+                        for site, day, type_value, cycle in zip(
+                            temp_df["Site ID"], temp_df["__date__"],
+                            temp_df["Type of supply"], temp_df["__cycle__"],
+                        )
+                    ]
+
+                    # Rows describing the same delivery (same site, same supply
+                    # type, same cycle) are added together before writing, so one
+                    # upload can never store a delivery twice.
+                    for col in SUPPLY_NUM_COLS:
+                        temp_df[col] = temp_df[col].apply(clean_numeric)
+                    merged_rows = 0
+                    if temp_df["__key__"].duplicated().any():
+                        merged_rows = int(temp_df["__key__"].duplicated().sum())
+                        temp_df = (
+                            temp_df.groupby("__key__", as_index=False, sort=False)
+                            .agg({
+                                "Site ID": "first",
+                                "Region": "first",
+                                "Cluster": "first",
+                                "Zones": "first",
+                                "Qty before supply Tank 1": "sum",
+                                "QTY supplied Tank 1": "sum",
+                                "Qty before supply Tank 2": "sum",
+                                "QTY supplied Tank 2": "sum",
+                                "Approved CPD": "mean",
+                                "Supply Date": "last",
+                                "Bobtail number": "last",
+                                "Type of supply": "last",
+                                "__date__": "last",
+                                "__cycle__": "last",
+                            })
+                        )
+
                     existing = {}
                     if not df_raw.empty and {"Site ID", "Supply Date", "doc_id"} <= set(df_raw.columns):
-                        for _, r in df_raw.iterrows():
-                            if pd.notnull(r["Supply Date"]):
-                                existing[(str(r["Site ID"]), r["Supply Date"].date())] = r["doc_id"]
+                        raw_types = (
+                            df_raw["Type of supply"] if "Type of supply" in df_raw.columns
+                            else pd.Series("", index=df_raw.index)
+                        )
+                        raw_cycles, _ = supply_cycle_parts(df_raw["Supply Date"], raw_types)
+                        for site, day, type_value, cycle, doc in zip(
+                            df_raw["Site ID"].astype(str), df_raw["Supply Date"],
+                            raw_types, raw_cycles, df_raw["doc_id"],
+                        ):
+                            if pd.notnull(day) and pd.notnull(doc):
+                                existing[supply_upsert_key(site, day, type_value, cycle)] = doc
 
                     count = 0
                     skipped = 0
@@ -713,11 +812,13 @@ elif input_method == "Upload Excel File":
                                 "Bobtail number": str(row["Bobtail number"]),
                                 "Type of supply": str(row.get("Type of supply", "1st supply")).strip(),
                             }
-                            doc_id = existing.get((str(row["Site ID"]), supply_day.date()))
+                            doc_id = existing.get(row["__key__"])
                             if doc_id:
-                                batch.update(db.collection("supplies").document(doc_id), record)
+                                batch.update(db.collection("supplies").document(str(doc_id)), record)
                             else:
-                                batch.set(db.collection("supplies").document(), record)
+                                ref = db.collection("supplies").document()
+                                batch.set(ref, record)
+                                existing[row["__key__"]] = ref.id
                                 new_rows += 1
                             count += 1
                             pending += 1
@@ -729,6 +830,11 @@ elif input_method == "Upload Excel File":
 
                     batch.commit()
                     st.sidebar.success(f"✅ Wrote {count} rows ({new_rows} new, {count - new_rows} updated).")
+                    if merged_rows:
+                        st.sidebar.info(
+                            f"ℹ️ {merged_rows} row(s) repeated the same site, supply type and cycle; "
+                            "they were added together instead of being stored twice."
+                        )
                     if skipped:
                         st.sidebar.warning(f"⚠️ Skipped {skipped} rows with no Site ID or an unparseable Supply Date.")
                     del st.session_state["file_to_upload"]
@@ -943,6 +1049,7 @@ def build_consumption_model(base_df, today, recent_days, due_soon_days):
             "Cluster": last.get("Cluster", ""),
             "Zones": last.get("Zones", ""),
             "Type of supply": last.get("Type of supply", ""),
+            "Supply Cycle": last.get("Supply Cycle", ""),
             "Last Supply Date": last_date,
             "Days Since Last Supply": days_since,
             "Approved CPD": site_approved,
@@ -1054,6 +1161,12 @@ if not df_math.empty:
 
     today = pd.Timestamp.today().normalize()
 
+    # The cycle comes from "Type of supply" so an Oct 3rd delivery made on
+    # 02/11 still counts inside the October cycle.
+    df_math["Supply Cycle"], _ = supply_cycle_parts(
+        get_col(df_math, "Supply Date"), get_col(df_math, "Type of supply")
+    )
+
     if is_admin:
         recent_window = st.sidebar.slider("Sites supplied within N days = 'recent'", 1, 60, 14,
                                           help="Cohort split used by the consumption analysis.")
@@ -1074,9 +1187,6 @@ if not df_math.empty:
             + num_col(df_math, "QTY supplied Tank 2")
         )
     df_math["Total QTY Supplied (MT)"] = df_math["Total QTY Supplied"] / LITRES_PER_MT
-    # Supply cycle groups records into calendar months (Sep 2026, Oct 2026, ...).
-    supply_dates = pd.to_datetime(get_col(df_math, "Supply Date"), errors="coerce")
-    df_math["Supply Cycle"] = supply_dates.dt.strftime("%b %Y")
 
     st.sidebar.header("🔍 Filters")
     valid_dates = df_math["Supply Date"].dropna()
@@ -1119,11 +1229,27 @@ if not df_math.empty:
         mask_sites = apply_eq(mask_sites, df_sites, cname, value)
     filtered_sites = df_sites[mask_sites].copy()
 
-    if not filtered_sites.empty and {"Site ID", "Total QTY Supplied"} <= set(filtered_math_df.columns):
-        site_totals_map = filtered_math_df.groupby("Site ID")["Total QTY Supplied"].sum()
-        filtered_sites["Site Total Supplied (L)"] = (
-            filtered_sites["Site ID"].map(site_totals_map).fillna(0.0).round(2)
+    if not filtered_sites.empty and {"Site ID", "Supply Cycle", "Total QTY Supplied"} <= set(filtered_math_df.columns):
+        cycle_source = filtered_math_df.dropna(subset=["Supply Cycle"])
+        # The status table must total the cycle that is actually inside the
+        # selected date window, not the site's latest cycle overall.
+        latest_cycle = (
+            cycle_source.sort_values("Supply Date")
+            .drop_duplicates(subset=["Site ID"], keep="last")
+            .set_index("Site ID")["Supply Cycle"]
         )
+        filtered_sites["Supply Cycle"] = (
+            filtered_sites["Site ID"].map(latest_cycle)
+            if "Supply Cycle" not in filtered_sites.columns
+            else filtered_sites["Site ID"].map(latest_cycle).fillna(filtered_sites["Supply Cycle"])
+        )
+        cycle_totals_map = cycle_source.groupby(["Site ID", "Supply Cycle"])["Total QTY Supplied"].sum()
+        cycle_count_map = cycle_source.groupby(["Site ID", "Supply Cycle"])["Supply Date"].count()
+        site_cycles = list(zip(filtered_sites["Site ID"], filtered_sites["Supply Cycle"]))
+        filtered_sites["Supplies in Cycle"] = [int(cycle_count_map.get(k, 0)) for k in site_cycles]
+        filtered_sites["Site Total Supplied (L)"] = [
+            round(float(cycle_totals_map.get(k, 0.0)), 2) for k in site_cycles
+        ]
         filtered_sites["Site Total Supplied (MT)"] = (
             filtered_sites["Site Total Supplied (L)"] / LITRES_PER_MT
         ).round(2)
@@ -1212,16 +1338,23 @@ if not df_math.empty:
             if "Supply Cycle" in zone_source.columns:
                 st.markdown("**Fuel supplied by zone and supply cycle (MT)**")
                 cycle_df = zone_source.dropna(subset=["Supply Cycle"])
-                cycle_months = pd.to_datetime(cycle_df["Supply Date"], errors="coerce").dropna().dt.to_period("M")
-                if cycle_df.empty or cycle_months.empty:
+                _, cycle_sort = supply_cycle_parts(
+                    cycle_df["Supply Date"], get_col(cycle_df, "Type of supply")
+                )
+                cycle_keys = sorted({int(k) for k in cycle_sort.dropna().tolist()})
+                if cycle_df.empty or not cycle_keys:
                     st.info("No dated supplies to split by supply cycle for these filters.")
                 else:
-                    # Every month between the first and last supply is shown, so a
-                    # month with no recorded supply appears as 0 instead of vanishing.
-                    cycle_order = [
-                        p.strftime("%b %Y")
-                        for p in pd.period_range(cycle_months.min(), cycle_months.max(), freq="M")
-                    ]
+                    # Every month between the first and last cycle is shown, so a
+                    # cycle with no recorded supply appears as 0 instead of vanishing.
+                    cycle_order = []
+                    year, month = divmod(cycle_keys[0], 100)
+                    end_year, end_month = divmod(cycle_keys[-1], 100)
+                    while (year, month) <= (end_year, end_month):
+                        cycle_order.append(f"{MONTH_ABBR[month]} {year}")
+                        month += 1
+                        if month == 13:
+                            month, year = 1, year + 1
                     zone_cycle = pd.pivot_table(
                         cycle_df, index="Zones", columns="Supply Cycle",
                         values="Total QTY Supplied (MT)", aggfunc="sum", fill_value=0,
@@ -1230,8 +1363,9 @@ if not df_math.empty:
                     zone_cycle.loc["Total"] = zone_cycle.sum()
                     zone_cycle = zone_cycle.round(2).reset_index().rename(columns={"Zones": "Zone"})
                     st.caption(
-                        f"Monthly supply cycles from Supply Date. Values are Metric Tonnes "
-                        f"(1 MT = {LITRES_PER_MT:,} L); records without a zone are shown as Unassigned."
+                        "Cycles come from the month named in Type of supply (e.g. 'Oct 3rd Supply'), "
+                        f"so a delivery made in early November still counts in October. Values are Metric "
+                        f"Tonnes (1 MT = {LITRES_PER_MT:,} L); records without a zone show as Unassigned."
                     )
                     st.dataframe(zone_cycle, use_container_width=True, hide_index=True)
 
@@ -1369,7 +1503,8 @@ if not df_math.empty:
                     st.plotly_chart(fig_scatter, use_container_width=True)
 
                 st.markdown("**Site-level consumption status**")
-                site_cols = ["Site ID", "Region", "Cluster", "Zones", "Type of supply",
+                site_cols = ["Site ID", "Region", "Cluster", "Zones", "Supply Cycle", "Type of supply",
+                             "Supplies in Cycle",
                              "Site Total Supplied (L)", "Site Total Supplied (MT)", "Last Supply Date",
                              "Days Since Last Supply", "Supply Cohort", "Approved CPD", "CPD", "CPD Basis",
                              "Avg Days Between Supplies", "Qty After Last Supply", "Projected Qty Today",
@@ -1421,24 +1556,33 @@ if not df_math.empty:
             st.dataframe(hist_view, hide_index=True, use_container_width=True)
 
         st.markdown("---")
-        st.subheader("📋 Current Status (Latest Record per Site)")
-        df_latest = filtered_math_df.sort_values("Supply Date").drop_duplicates(subset=["Site ID"], keep="last")
-        site_total_map = filtered_math_df.groupby("Site ID")["Total QTY Supplied"].sum()
-        df_latest = df_latest.copy()
-        df_latest["Site Total Supplied (L)"] = df_latest["Site ID"].map(site_total_map).round(2)
+        st.subheader("📋 Current Status (Latest Record per Site and Supply Cycle)")
+        df_latest = filtered_math_df.sort_values("Supply Date").drop_duplicates(
+            subset=["Site ID", "Supply Cycle"], keep="last"
+        ).copy()
+        cycle_key = ["Site ID", "Supply Cycle"]
+        cycle_keys = list(zip(df_latest["Site ID"], df_latest["Supply Cycle"]))
+        site_total_map = filtered_math_df.groupby(cycle_key)["Total QTY Supplied"].sum()
+        cycle_count_map = filtered_math_df.groupby(cycle_key)["Supply Date"].count()
+        df_latest["Supplies in Cycle"] = [int(cycle_count_map.get(k, 0)) for k in cycle_keys]
+        df_latest["Site Total Supplied (L)"] = [
+            round(float(site_total_map.get(k, 0.0)), 2) for k in cycle_keys
+        ]
         df_latest["Site Total Supplied (MT)"] = (
             df_latest["Site Total Supplied (L)"] / LITRES_PER_MT
         ).round(2)
 
         if is_admin:
-            display_cols = ["Site ID", "Region", "Cluster", "Zones", "Type of supply", "Total QTY Supplied",
+            display_cols = ["Site ID", "Region", "Cluster", "Zones", "Supply Cycle", "Supplies in Cycle",
+                            "Type of supply", "Total QTY Supplied",
                             "Total QTY Supplied (MT)",
                             "Site Total Supplied (L)", "Site Total Supplied (MT)",
                             "Total QTY Before Supply", "Approved CPD", "Estimated CPD", "CPD Variance",
                             "Variance Status", "Supply Date", "Estimated Next Supply Date", "Supply Alert",
                             "Bobtail number"]
         else:
-            display_cols = ["Site ID", "Region", "Cluster", "Zones", "Type of supply",
+            display_cols = ["Site ID", "Region", "Cluster", "Zones", "Supply Cycle", "Supplies in Cycle",
+                            "Type of supply",
                             "QTY supplied Tank 1", "QTY supplied Tank 2", "Total QTY Supplied",
                             "Total QTY Supplied (MT)",
                             "Site Total Supplied (L)", "Site Total Supplied (MT)",
@@ -1531,8 +1675,8 @@ if not df_math.empty:
             st.markdown("**1. Site Supply Data**")
             st.caption(
                 "The download has one row per supply record in 'Site Supplies', with "
-                "'Site Total Supplied (L)' and '(MT)' next to Site ID on every row, plus a "
-                "'Site Totals' sheet with one row per site."
+                "'Supply Cycle' and the site's total for that cycle in litres and MT next to "
+                "Site ID, plus a 'Site Totals' sheet with one row per site and supply cycle."
             )
             drop_cols = ["_status_key"] if is_admin else ["_status_key", "Approved CPD"]
             export_supply_df = fmt_date_cols(filtered_math_df, ["Supply Date"]).drop(
@@ -1540,20 +1684,20 @@ if not df_math.empty:
             )
 
             if {"Site ID", "Total QTY Supplied"} <= set(export_supply_df.columns):
-                site_total_l = export_supply_df.groupby("Site ID")["Total QTY Supplied"].transform("sum")
+                cycle_cols = [c for c in ["Site ID", "Supply Cycle"] if c in export_supply_df.columns]
+                site_total_l = export_supply_df.groupby(cycle_cols)["Total QTY Supplied"].transform("sum")
                 export_supply_df["Site Total Supplied (L)"] = site_total_l.round(2)
                 export_supply_df["Site Total Supplied (MT)"] = (site_total_l / LITRES_PER_MT).round(2)
                 export_cols = list(export_supply_df.columns)
-                insert_at = (
-                    export_cols.index("Site ID") + 1
-                    if "Site ID" in export_cols else len(export_cols)
-                )
+                anchor = "Supply Cycle" if "Supply Cycle" in export_cols else "Site ID"
+                insert_at = export_cols.index(anchor) + 1 if anchor in export_cols else len(export_cols)
                 new_cols = ["Site Total Supplied (L)", "Site Total Supplied (MT)"]
                 export_cols = [c for c in export_cols if c not in new_cols]
                 for offset, cname in enumerate(new_cols):
                     export_cols.insert(insert_at + offset, cname)
                 export_supply_df = export_supply_df[export_cols]
 
+            group_cols = [c for c in ["Site ID", "Supply Cycle"] if c in filtered_math_df.columns]
             site_agg = {
                 "Supply Records": ("Supply Date", "count"),
                 "First Supply": ("Supply Date", "min"),
@@ -1567,14 +1711,24 @@ if not df_math.empty:
 
             site_totals_df = (
                 filtered_math_df.sort_values("Supply Date")
-                .groupby("Site ID", dropna=False)
+                .groupby(group_cols, dropna=False)
                 .agg(**site_agg)
                 .reset_index()
-                .sort_values("Total Supplied (L)", ascending=False)
             )
+            if "Supply Cycle" in site_totals_df.columns:
+                site_totals_df["__cycle_sort__"] = pd.to_datetime(
+                    site_totals_df["Supply Cycle"], format="%b %Y", errors="coerce"
+                )
+                site_totals_df = (
+                    site_totals_df.sort_values(["__cycle_sort__", "Total Supplied (L)"],
+                                               ascending=[True, False])
+                    .drop(columns="__cycle_sort__")
+                )
+            else:
+                site_totals_df = site_totals_df.sort_values("Total Supplied (L)", ascending=False)
             site_totals_df["Total Supplied (L)"] = site_totals_df["Total Supplied (L)"].round(2)
             site_totals_df["Total Supplied (MT)"] = site_totals_df["Total Supplied (MT)"].round(2)
-            site_total_order = ["Site ID"] + [
+            site_total_order = [c for c in ["Site ID", "Supply Cycle"] if c in site_totals_df.columns] + [
                 c for c in ["Region", "Cluster", "Zones", "Type of supply"] if c in site_totals_df.columns
             ] + ["Supply Records", "First Supply", "Last Supply",
                  "Total Supplied (L)", "Total Supplied (MT)"]
@@ -1587,9 +1741,11 @@ if not df_math.empty:
                 export_supply_df.to_excel(writer, index=False, sheet_name="Site Supplies")
                 site_totals_df.to_excel(writer, index=False, sheet_name="Site Totals")
                 pd.DataFrame({
-                    "Item": ["App version", "Report generated", "Date range", "Litres per MT"],
+                    "Item": ["App version", "Report generated", "Date range", "Litres per MT",
+                             "Supply cycle basis"],
                     "Value": [APP_VERSION, datetime.now().strftime("%Y-%m-%d %H:%M"),
-                              f"{start_date} to {end_date}", LITRES_PER_MT],
+                              f"{start_date} to {end_date}", LITRES_PER_MT,
+                              "Month in 'Type of supply' (e.g. Oct 3rd Supply)"],
                 }).to_excel(writer, index=False, sheet_name="Report Info")
                 if is_admin and not filtered_sites.empty:
                     fmt_date_cols(filtered_sites.drop(columns=["Supply Cohort Key"], errors="ignore"),
