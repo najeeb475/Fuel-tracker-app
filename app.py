@@ -1071,6 +1071,9 @@ if not df_math.empty:
             + num_col(df_math, "QTY supplied Tank 2")
         )
     df_math["Total QTY Supplied (MT)"] = df_math["Total QTY Supplied"] / LITRES_PER_MT
+    # Supply cycle groups records into calendar months (Sep 2026, Oct 2026, ...).
+    supply_dates = pd.to_datetime(get_col(df_math, "Supply Date"), errors="coerce")
+    df_math["Supply Cycle"] = supply_dates.dt.strftime("%b %Y")
 
     st.sidebar.header("🔍 Filters")
     valid_dates = df_math["Supply Date"].dropna()
@@ -1187,6 +1190,42 @@ if not df_math.empty:
                 }]),
             ], ignore_index=True)
             st.dataframe(zone_tbl, use_container_width=True, hide_index=True)
+
+            if "Supply Cycle" in filtered_math_df.columns:
+                st.markdown("**Fuel supplied by zone and supply cycle**")
+                zone_cycle_unit = st.radio(
+                    "Zone cycle unit", ["Litres (L)", "Metric Tonnes (MT)"],
+                    horizontal=True, key="zone_cycle_unit",
+                )
+                zone_cycle_col = (
+                    "Total QTY Supplied" if zone_cycle_unit.startswith("Litres")
+                    else "Total QTY Supplied (MT)"
+                )
+                cycle_df = filtered_math_df.dropna(subset=["Zones", "Supply Cycle"])
+                if cycle_df.empty:
+                    st.info("No dated supplies to split by supply cycle for these filters.")
+                else:
+                    cycle_order = (
+                        cycle_df.assign(
+                            _month=pd.to_datetime(cycle_df["Supply Date"], errors="coerce").dt.to_period("M")
+                        )
+                        .dropna(subset=["_month"])
+                        .groupby("Supply Cycle")["_month"].min()
+                        .sort_values()
+                        .index.tolist()
+                    )
+                    zone_cycle = pd.pivot_table(
+                        cycle_df, index="Zones", columns="Supply Cycle",
+                        values=zone_cycle_col, aggfunc="sum", fill_value=0,
+                    )
+                    zone_cycle = zone_cycle.reindex(
+                        columns=[c for c in cycle_order if c in zone_cycle.columns]
+                    )
+                    zone_cycle["Total"] = zone_cycle.sum(axis=1)
+                    zone_cycle.loc["Total"] = zone_cycle.sum()
+                    zone_cycle = zone_cycle.round(2).reset_index().rename(columns={"Zones": "Zone"})
+                    st.caption(f"Monthly supply cycles from the selected date range. Unit: {zone_cycle_unit}.")
+                    st.dataframe(zone_cycle, use_container_width=True, hide_index=True)
 
         st.markdown("---")
         st.subheader("🚛 Sites by Supply Type")
@@ -1375,10 +1414,17 @@ if not df_math.empty:
         st.markdown("---")
         st.subheader("📋 Current Status (Latest Record per Site)")
         df_latest = filtered_math_df.sort_values("Supply Date").drop_duplicates(subset=["Site ID"], keep="last")
+        site_total_map = filtered_math_df.groupby("Site ID")["Total QTY Supplied"].sum()
+        df_latest = df_latest.copy()
+        df_latest["Site Total Supplied (L)"] = df_latest["Site ID"].map(site_total_map).round(2)
+        df_latest["Site Total Supplied (MT)"] = (
+            df_latest["Site Total Supplied (L)"] / LITRES_PER_MT
+        ).round(2)
 
         if is_admin:
             display_cols = ["Site ID", "Region", "Cluster", "Zones", "Type of supply", "Total QTY Supplied",
                             "Total QTY Supplied (MT)",
+                            "Site Total Supplied (L)", "Site Total Supplied (MT)",
                             "Total QTY Before Supply", "Approved CPD", "Estimated CPD", "CPD Variance",
                             "Variance Status", "Supply Date", "Estimated Next Supply Date", "Supply Alert",
                             "Bobtail number"]
@@ -1386,6 +1432,7 @@ if not df_math.empty:
             display_cols = ["Site ID", "Region", "Cluster", "Zones", "Type of supply",
                             "QTY supplied Tank 1", "QTY supplied Tank 2", "Total QTY Supplied",
                             "Total QTY Supplied (MT)",
+                            "Site Total Supplied (L)", "Site Total Supplied (MT)",
                             "Supply Date", "Bobtail number"]
 
         status_view_df = df_latest[[c for c in display_cols if c in df_latest.columns]].copy()
@@ -1474,13 +1521,29 @@ if not df_math.empty:
         with col_exp1:
             st.markdown("**1. Site Supply Data**")
             st.caption(
-                "The download has one row per supply record in 'Site Supplies', "
-                "and a 'Site Totals' sheet that already adds up the litres and MT delivered to each site."
+                "The download has one row per supply record in 'Site Supplies', plus "
+                "'Site Total Supplied (L)' and '(MT)' columns on every row, and a 'Site Totals' "
+                "sheet with one row per site."
             )
             drop_cols = ["_status_key"] if is_admin else ["_status_key", "Approved CPD"]
             export_supply_df = fmt_date_cols(filtered_math_df, ["Supply Date"]).drop(
                 columns=drop_cols, errors="ignore"
             )
+
+            if {"Site ID", "Total QTY Supplied"} <= set(export_supply_df.columns):
+                site_total_l = export_supply_df.groupby("Site ID")["Total QTY Supplied"].transform("sum")
+                export_supply_df["Site Total Supplied (L)"] = site_total_l.round(2)
+                export_supply_df["Site Total Supplied (MT)"] = (site_total_l / LITRES_PER_MT).round(2)
+                export_cols = list(export_supply_df.columns)
+                insert_at = (
+                    export_cols.index("Total QTY Supplied (MT)") + 1
+                    if "Total QTY Supplied (MT)" in export_cols else len(export_cols)
+                )
+                new_cols = ["Site Total Supplied (L)", "Site Total Supplied (MT)"]
+                export_cols = [c for c in export_cols if c not in new_cols]
+                for offset, cname in enumerate(new_cols):
+                    export_cols.insert(insert_at + offset, cname)
+                export_supply_df = export_supply_df[export_cols]
 
             site_agg = {
                 "Supply Records": ("Supply Date", "count"),
