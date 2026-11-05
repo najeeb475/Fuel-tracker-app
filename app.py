@@ -1119,6 +1119,15 @@ if not df_math.empty:
         mask_sites = apply_eq(mask_sites, df_sites, cname, value)
     filtered_sites = df_sites[mask_sites].copy()
 
+    if not filtered_sites.empty and {"Site ID", "Total QTY Supplied"} <= set(filtered_math_df.columns):
+        site_totals_map = filtered_math_df.groupby("Site ID")["Total QTY Supplied"].sum()
+        filtered_sites["Site Total Supplied (L)"] = (
+            filtered_sites["Site ID"].map(site_totals_map).fillna(0.0).round(2)
+        )
+        filtered_sites["Site Total Supplied (MT)"] = (
+            filtered_sites["Site Total Supplied (L)"] / LITRES_PER_MT
+        ).round(2)
+
     if filtered_math_df.empty:
         st.warning("No data found for the selected filters.")
     else:
@@ -1360,7 +1369,8 @@ if not df_math.empty:
                     st.plotly_chart(fig_scatter, use_container_width=True)
 
                 st.markdown("**Site-level consumption status**")
-                site_cols = ["Site ID", "Region", "Cluster", "Zones", "Type of supply", "Last Supply Date",
+                site_cols = ["Site ID", "Region", "Cluster", "Zones", "Type of supply",
+                             "Site Total Supplied (L)", "Site Total Supplied (MT)", "Last Supply Date",
                              "Days Since Last Supply", "Supply Cohort", "Approved CPD", "CPD", "CPD Basis",
                              "Avg Days Between Supplies", "Qty After Last Supply", "Projected Qty Today",
                              "Projected Days Left", "Estimated Next Supply Date", "Supply Alert", "Variance Status"]
