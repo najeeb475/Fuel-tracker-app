@@ -37,7 +37,7 @@ COHORT_COLORS = {
 }
 
 COOKIE_TTL_SECONDS = 30 * 24 * 60 * 60
-APP_VERSION = "2026-11-09 admin-only waybills + all-cycle site totals"
+APP_VERSION = "2026-11-09b multi-select filters + admin-only waybills"
 LITRES_PER_MT = 1960  # 1 Metric Ton of fuel = 1,960 litres
 SUPPLY_NUM_COLS = [
     "Qty before supply Tank 1",
@@ -151,7 +151,13 @@ def num_col(df, name):
 
 
 def apply_eq(mask, df, column, value):
-    if column in df.columns and value != "All":
+    if column not in df.columns:
+        return mask
+    if isinstance(value, (list, tuple, set)):
+        if not value:
+            return mask & False
+        return mask & df[column].isin(list(value))
+    if value != "All":
         return mask & (df[column] == value)
     return mask
 
@@ -1198,14 +1204,21 @@ if not df_math.empty:
     def unique_options(column):
         if column in df_math.columns:
             vals = [str(v) for v in df_math[column].dropna().unique()]
-            return ["All"] + sorted(vals)
-        return ["All"]
+            return sorted(vals)
+        return []
 
-    selected_region = st.sidebar.selectbox("Region", unique_options("Region"))
-    selected_cluster = st.sidebar.selectbox("Cluster", unique_options("Cluster"))
-    selected_zone = st.sidebar.selectbox("Zones", unique_options("Zones"))
-    selected_supply_type = st.sidebar.selectbox("Type of Supply", unique_options("Type of supply"))
-    selected_site = st.sidebar.selectbox("Site ID", unique_options("Site ID"))
+    region_options = unique_options("Region")
+    cluster_options = unique_options("Cluster")
+    zone_options = unique_options("Zones")
+    supply_type_options = unique_options("Type of supply")
+    site_options = unique_options("Site ID")
+
+    selected_region = st.sidebar.multiselect("Region", region_options, default=region_options)
+    selected_cluster = st.sidebar.multiselect("Cluster", cluster_options, default=cluster_options)
+    selected_zone = st.sidebar.multiselect("Zones", zone_options, default=zone_options)
+    selected_supply_type = st.sidebar.multiselect("Type of Supply", supply_type_options,
+                                                  default=supply_type_options)
+    selected_site = st.sidebar.multiselect("Site ID", site_options, default=site_options)
 
     filter_map = {"Region": selected_region, "Cluster": selected_cluster, "Zones": selected_zone,
                   "Type of supply": selected_supply_type, "Site ID": selected_site}
