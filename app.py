@@ -37,7 +37,7 @@ COHORT_COLORS = {
 }
 
 COOKIE_TTL_SECONDS = 30 * 24 * 60 * 60
-APP_VERSION = "2026-11-05b cycle totals + type-keyed upload"
+APP_VERSION = "2026-11-09 admin-only waybills + all-cycle site totals"
 LITRES_PER_MT = 1960  # 1 Metric Ton of fuel = 1,960 litres
 SUPPLY_NUM_COLS = [
     "Qty before supply Tank 1",
@@ -442,7 +442,10 @@ if db:
         df_waybills = prepare_waybills(collection_df("waybills"))
     except Exception as e:
         st.warning(f"Waybills load issue: {e}")
-    st.sidebar.info(f"📊 Loaded {len(df_raw)} supply records & {len(df_waybills)} waybills.")
+    if st.session_state.role == "Admin":
+        st.sidebar.info(f"📊 Loaded {len(df_raw)} supply records & {len(df_waybills)} waybills.")
+    else:
+        st.sidebar.info(f"📊 Loaded {len(df_raw)} supply records.")
     if dropped_supply_rows:
         st.sidebar.warning(
             f"⚠️ {dropped_supply_rows} supply rows skipped (missing/invalid Site ID or Supply Date)."
@@ -842,71 +845,72 @@ elif input_method == "Upload Excel File":
                 except Exception as e:
                     st.sidebar.error(f"❌ Upload failed: {e}")
 
-# ---------- 4.5 WAYBILL MANAGEMENT ----------
-st.sidebar.markdown("---")
-st.sidebar.header("🚛 Waybill Management")
-waybill_action = st.sidebar.radio(
-    "Select Waybill Action", [ADD_WAYBILL_OPTION, VIEW_WAYBILL_OPTION],
-    format_func=lambda v: WAYBILL_LABELS.get(v, v),
-)
+# ---------- 4.5 WAYBILL MANAGEMENT (Admin only) ----------
+if st.session_state.role == "Admin":
+    st.sidebar.markdown("---")
+    st.sidebar.header("🚛 Waybill Management")
+    waybill_action = st.sidebar.radio(
+        "Select Waybill Action", [ADD_WAYBILL_OPTION, VIEW_WAYBILL_OPTION],
+        format_func=lambda v: WAYBILL_LABELS.get(v, v),
+    )
 
-if waybill_action == ADD_WAYBILL_OPTION:
-    st.sidebar.subheader("Log Truck Waybill")
-    if not db:
-        st.sidebar.error("Database not connected.")
-    else:
-        with st.sidebar.form("waybill_form"):
-            waybill_no = st.text_input("Waybill Number / ID")
-            truck_no = st.text_input("Truck / Bobtail Number")
-            driver_name = st.text_input("Driver Name (Optional)")
+    if waybill_action == ADD_WAYBILL_OPTION:
+        st.sidebar.subheader("Log Truck Waybill")
+        if not db:
+            st.sidebar.error("Database not connected.")
+        else:
+            with st.sidebar.form("waybill_form"):
+                waybill_no = st.text_input("Waybill Number / ID")
+                truck_no = st.text_input("Truck / Bobtail Number")
+                driver_name = st.text_input("Driver Name (Optional)")
 
-            col_d1, col_d2 = st.columns(2)
-            with col_d1:
-                trip_start_date = st.date_input("Trip Start Date", value=date.today())
-            with col_d2:
-                trip_end_date = st.date_input("Trip End Date", value=date.today())
+                col_d1, col_d2 = st.columns(2)
+                with col_d1:
+                    trip_start_date = st.date_input("Trip Start Date", value=date.today())
+                with col_d2:
+                    trip_end_date = st.date_input("Trip End Date", value=date.today())
 
-            st.markdown("**Quantity Tracking:**")
-            initial_qty_l = st.number_input("Initial QTY (Litres)", min_value=0.0, format="%.2f")
-            loaded_qty_l = st.number_input("QTY After Loading (Litres)", min_value=0.0, format="%.2f")
-            loaded_qty_kg = st.number_input("QTY After Loading (Kg)", min_value=0.0, format="%.2f")
-            supplied_qty_l = st.number_input("Total QTY Supplied (Litres)", min_value=0.0, format="%.2f")
-            remaining_qty_l = st.number_input("Remaining QTY in Truck (Litres)", min_value=0.0, format="%.2f")
+                st.markdown("**Quantity Tracking:**")
+                initial_qty_l = st.number_input("Initial QTY (Litres)", min_value=0.0, format="%.2f")
+                loaded_qty_l = st.number_input("QTY After Loading (Litres)", min_value=0.0, format="%.2f")
+                loaded_qty_kg = st.number_input("QTY After Loading (Kg)", min_value=0.0, format="%.2f")
+                supplied_qty_l = st.number_input("Total QTY Supplied (Litres)", min_value=0.0, format="%.2f")
+                remaining_qty_l = st.number_input("Remaining QTY in Truck (Litres)", min_value=0.0, format="%.2f")
 
-            st.markdown("**Site Mapping:**")
-            mapped_sites = st.number_input("Mapped Sites (Planned)", min_value=0, step=1)
-            supplied_sites = st.number_input("Supplied Sites (Actual)", min_value=0, step=1)
+                st.markdown("**Site Mapping:**")
+                mapped_sites = st.number_input("Mapped Sites (Planned)", min_value=0, step=1)
+                supplied_sites = st.number_input("Supplied Sites (Actual)", min_value=0, step=1)
 
-            if st.form_submit_button("💾 Save Waybill", type="primary"):
-                if not waybill_no or not truck_no:
-                    st.sidebar.error("Waybill Number and Truck Number are required.")
-                else:
-                    db.collection("waybills").add({
-                        "Waybill Number": str(waybill_no).strip(),
-                        "Truck Number": str(truck_no).strip(),
-                        "Driver Name": str(driver_name).strip(),
-                        "Trip Start Date": trip_start_date.strftime("%Y-%m-%d"),
-                        "Trip End Date": trip_end_date.strftime("%Y-%m-%d"),
-                        "Initial QTY (L)": float(initial_qty_l),
-                        "Loaded QTY (L)": float(loaded_qty_l),
-                        "Loaded QTY (Kg)": float(loaded_qty_kg),
-                        "Supplied QTY (L)": float(supplied_qty_l),
-                        "Remaining QTY (L)": float(remaining_qty_l),
-                        "Mapped Sites": int(mapped_sites),
-                        "Supplied Sites": int(supplied_sites),
-                        "Added By": st.session_state.role,
-                    })
-                    st.sidebar.success("✅ Waybill saved successfully!")
-                    st.rerun()
+                if st.form_submit_button("💾 Save Waybill", type="primary"):
+                    if not waybill_no or not truck_no:
+                        st.sidebar.error("Waybill Number and Truck Number are required.")
+                    else:
+                        db.collection("waybills").add({
+                            "Waybill Number": str(waybill_no).strip(),
+                            "Truck Number": str(truck_no).strip(),
+                            "Driver Name": str(driver_name).strip(),
+                            "Trip Start Date": trip_start_date.strftime("%Y-%m-%d"),
+                            "Trip End Date": trip_end_date.strftime("%Y-%m-%d"),
+                            "Initial QTY (L)": float(initial_qty_l),
+                            "Loaded QTY (L)": float(loaded_qty_l),
+                            "Loaded QTY (Kg)": float(loaded_qty_kg),
+                            "Supplied QTY (L)": float(supplied_qty_l),
+                            "Remaining QTY (L)": float(remaining_qty_l),
+                            "Mapped Sites": int(mapped_sites),
+                            "Supplied Sites": int(supplied_sites),
+                            "Added By": st.session_state.role,
+                        })
+                        st.sidebar.success("✅ Waybill saved successfully!")
+                        st.rerun()
 
-elif waybill_action == VIEW_WAYBILL_OPTION:
-    st.sidebar.subheader("Recent Waybills")
-    if not df_waybills.empty:
-        wb_display_cols = ["Trip Start Date", "Waybill Number", "Truck Number", "Loaded QTY (L)", "Supplied Sites"]
-        final_wb_cols = [c for c in wb_display_cols if c in df_waybills.columns]
-        st.sidebar.dataframe(df_waybills[final_wb_cols].head(10), hide_index=True, use_container_width=True)
-    else:
-        st.sidebar.info("No waybills logged yet.")
+    elif waybill_action == VIEW_WAYBILL_OPTION:
+        st.sidebar.subheader("Recent Waybills")
+        if not df_waybills.empty:
+            wb_display_cols = ["Trip Start Date", "Waybill Number", "Truck Number", "Loaded QTY (L)", "Supplied Sites"]
+            final_wb_cols = [c for c in wb_display_cols if c in df_waybills.columns]
+            st.sidebar.dataframe(df_waybills[final_wb_cols].head(10), hide_index=True, use_container_width=True)
+        else:
+            st.sidebar.info("No waybills logged yet.")
 
 # ---------- 5. ADMIN CONTROLS ----------
 if st.session_state.role == "Admin":
@@ -1148,14 +1152,6 @@ def cohort_comparison(sites_df, recent_days):
 role = st.session_state.role
 is_admin = role == "Admin"
 
-# Team members get the raw waybill columns only: no variance or difference
-# columns are ever selected for their tables or exports.
-TEAM_WAYBILL_COLS = [
-    "Waybill Number", "Truck Number", "Driver Name", "Trip Start Date", "Trip End Date",
-    "Initial QTY (L)", "Loaded QTY (L)", "Loaded QTY (Kg)", "Supplied QTY (L)",
-    "Supplied QTY (MT)", "Remaining QTY (L)", "Mapped Sites", "Supplied Sites",
-]
-
 if not df_math.empty:
     st.divider()
 
@@ -1291,12 +1287,11 @@ if not df_math.empty:
             col6.metric("Urgent Sites", urgent_supplies)
             col7.metric("Waybills Logged", total_waybills)
         else:
-            col1, col2, col3, col4 = st.columns(4)
+            col1, col2, col3 = st.columns(3)
             col1.metric("Sites Supplied (window)", sites_supplied)
             col2.metric("Total Fuel Supplied (L)", f"{total_supplied:,.2f} L")
             col3.metric("Total Fuel Supplied (MT)", f"{total_supplied_mt:,.2f} MT",
                         help=f"Litres ÷ {LITRES_PER_MT:,}")
-            col4.metric("Waybills Logged", total_waybills)
             st.caption(
                 "Team access shows how many sites were supplied and the fuel delivered in litres and "
                 f"Metric Tonnes (1 MT = {LITRES_PER_MT:,} L). "
@@ -1593,90 +1588,93 @@ if not df_math.empty:
             status_view_df["Total QTY Supplied (MT)"] = status_view_df["Total QTY Supplied (MT)"].round(2)
         st.dataframe(status_view_df, use_container_width=True, hide_index=True)
 
-        # ---------- WAYBILL TRACKER ----------
-        st.markdown("---")
-        st.subheader("🚛 Waybill Tracker" + (" & Truck Variance Analysis" if is_admin else ""))
-        if not df_waybills.empty:
-            valid_wb_dates = df_waybills["Trip Start Date"].dropna() if "Trip Start Date" in df_waybills.columns else pd.Series(dtype="datetime64[ns]")
-            if not valid_wb_dates.empty:
-                wb_min = valid_wb_dates.min().date()
-                wb_max = valid_wb_dates.max().date()
-                wb_filter_date = st.date_input("Filter Waybills by Trip Start Date", value=wb_max,
-                                               min_value=wb_min, max_value=wb_max)
-                filtered_wb = df_waybills[df_waybills["Trip Start Date"].dt.date == wb_filter_date]
-            else:
-                filtered_wb = df_waybills
-                wb_filter_date = date.today()
-        else:
-            filtered_wb = pd.DataFrame()
-            wb_filter_date = date.today()
-
-        if not filtered_wb.empty and "Supplied QTY (L)" in filtered_wb.columns:
-            filtered_wb = filtered_wb.copy()
-            filtered_wb["Supplied QTY (MT)"] = (
-                pd.to_numeric(filtered_wb["Supplied QTY (L)"], errors="coerce").fillna(0)
-                / LITRES_PER_MT
-            ).round(2)
-
-        if not df_waybills.empty:
-            if filtered_wb.empty:
-                st.info("No waybills logged for the selected date.")
-            else:
-                wb_cols_show = ["Waybill Number", "Truck Number", "Driver Name", "Trip Start Date",
-                                "Trip End Date", "Initial QTY (L)", "Loaded QTY (L)", "Loaded QTY (Kg)",
-                                "Supplied QTY (L)", "Supplied QTY (MT)", "Remaining QTY (L)",
-                                "Delivery Difference (L)",
-                                "Prev Remaining QTY (L)", "Mapped Sites", "Supplied Sites",
-                                "Site Variance", "Truck Variance Status"]
-                if is_admin:
-                    final_wb_show = [c for c in wb_cols_show if c in filtered_wb.columns]
+        # ---------- WAYBILL TRACKER (Admin only) ----------
+        if is_admin:
+            st.markdown("---")
+            st.subheader("🚛 Waybill Tracker & Truck Variance Analysis")
+            if not df_waybills.empty:
+                valid_wb_dates = df_waybills["Trip Start Date"].dropna() if "Trip Start Date" in df_waybills.columns else pd.Series(dtype="datetime64[ns]")
+                if not valid_wb_dates.empty:
+                    wb_min = valid_wb_dates.min().date()
+                    wb_max = valid_wb_dates.max().date()
+                    wb_filter_date = st.date_input("Filter Waybills by Trip Start Date", value=wb_max,
+                                                   min_value=wb_min, max_value=wb_max)
+                    filtered_wb = df_waybills[df_waybills["Trip Start Date"].dt.date == wb_filter_date]
                 else:
-                    final_wb_show = [c for c in TEAM_WAYBILL_COLS if c in filtered_wb.columns]
+                    filtered_wb = df_waybills
+                    wb_filter_date = date.today()
+            else:
+                filtered_wb = pd.DataFrame()
+                wb_filter_date = date.today()
 
-                def highlight_truck_var(val):
-                    text = str(val)
-                    if "Variance" in text:
-                        return "background-color: #ffcccc; font-weight: bold;"
-                    if "✅" in text:
-                        return "background-color: #d4edda;"
-                    return ""
+            if not filtered_wb.empty and "Supplied QTY (L)" in filtered_wb.columns:
+                filtered_wb = filtered_wb.copy()
+                filtered_wb["Supplied QTY (MT)"] = (
+                    pd.to_numeric(filtered_wb["Supplied QTY (L)"], errors="coerce").fillna(0)
+                    / LITRES_PER_MT
+                ).round(2)
 
-                styled_wb = filtered_wb[final_wb_show].style
-                if is_admin and "Truck Variance Status" in final_wb_show:
-                    apply_map = getattr(styled_wb, "map", None) or styled_wb.applymap
-                    apply_map(highlight_truck_var, subset=["Truck Variance Status"])
+            if not df_waybills.empty:
+                if filtered_wb.empty:
+                    st.info("No waybills logged for the selected date.")
+                else:
+                    wb_cols_show = ["Waybill Number", "Truck Number", "Driver Name", "Trip Start Date",
+                                    "Trip End Date", "Initial QTY (L)", "Loaded QTY (L)", "Loaded QTY (Kg)",
+                                    "Supplied QTY (L)", "Supplied QTY (MT)", "Remaining QTY (L)",
+                                    "Delivery Difference (L)",
+                                    "Prev Remaining QTY (L)", "Mapped Sites", "Supplied Sites",
+                                    "Site Variance", "Truck Variance Status"]
+                    final_wb_show = [c for c in wb_cols_show if c in filtered_wb.columns]
 
-                st.dataframe(styled_wb, use_container_width=True, hide_index=True)
+                    def highlight_truck_var(val):
+                        text = str(val)
+                        if "Variance" in text:
+                            return "background-color: #ffcccc; font-weight: bold;"
+                        if "✅" in text:
+                            return "background-color: #d4edda;"
+                        return ""
 
-                w_col1, w_col2, w_col3, w_col4, w_col5 = st.columns(5)
-                w_col1.metric("Total Trucks Dispatched", len(filtered_wb))
-                if "Loaded QTY (L)" in filtered_wb.columns:
-                    loaded_l = float(filtered_wb["Loaded QTY (L)"].sum())
-                    w_col2.metric("Total Fuel Dispatched (L)", f"{loaded_l:,.2f} L")
-                    w_col3.metric("Total Fuel Dispatched (MT)", f"{loaded_l / LITRES_PER_MT:,.2f} MT",
-                                  help=f"Litres ÷ {LITRES_PER_MT:,}")
-                if "Loaded QTY (Kg)" in filtered_wb.columns:
-                    w_col4.metric("Total Fuel Dispatched (Kg)", f"{filtered_wb['Loaded QTY (Kg)'].sum():,.2f} Kg")
-                if is_admin and "Supplied Sites" in filtered_wb.columns and "Mapped Sites" in filtered_wb.columns:
-                    total_mapped = int(filtered_wb["Mapped Sites"].sum())
-                    total_supplied_wb = int(filtered_wb["Supplied Sites"].sum())
-                    w_col5.metric("Sites: Mapped vs Supplied", f"{total_supplied_wb} / {total_mapped}")
-        else:
-            st.info("No waybills have been logged yet. Use the sidebar to add the first one!")
+                    styled_wb = filtered_wb[final_wb_show].style
+                    if "Truck Variance Status" in final_wb_show:
+                        apply_map = getattr(styled_wb, "map", None) or styled_wb.applymap
+                        apply_map(highlight_truck_var, subset=["Truck Variance Status"])
+
+                    st.dataframe(styled_wb, use_container_width=True, hide_index=True)
+
+                    w_col1, w_col2, w_col3, w_col4, w_col5 = st.columns(5)
+                    w_col1.metric("Total Trucks Dispatched", len(filtered_wb))
+                    if "Loaded QTY (L)" in filtered_wb.columns:
+                        loaded_l = float(filtered_wb["Loaded QTY (L)"].sum())
+                        w_col2.metric("Total Fuel Dispatched (L)", f"{loaded_l:,.2f} L")
+                        w_col3.metric("Total Fuel Dispatched (MT)", f"{loaded_l / LITRES_PER_MT:,.2f} MT",
+                                      help=f"Litres ÷ {LITRES_PER_MT:,}")
+                    if "Loaded QTY (Kg)" in filtered_wb.columns:
+                        w_col4.metric("Total Fuel Dispatched (Kg)", f"{filtered_wb['Loaded QTY (Kg)'].sum():,.2f} Kg")
+                    if "Supplied Sites" in filtered_wb.columns and "Mapped Sites" in filtered_wb.columns:
+                        total_mapped = int(filtered_wb["Mapped Sites"].sum())
+                        total_supplied_wb = int(filtered_wb["Supplied Sites"].sum())
+                        w_col5.metric("Sites: Mapped vs Supplied", f"{total_supplied_wb} / {total_mapped}")
+            else:
+                st.info("No waybills have been logged yet. Use the sidebar to add the first one!")
 
         # ---------- EXPORT ----------
         st.markdown("---")
         st.subheader("📥 Export Data to Excel")
         st.write("Download the currently filtered data for your records.")
 
-        col_exp1, col_exp2 = st.columns(2)
+        if is_admin:
+            col_exp1, col_exp2 = st.columns(2)
+        else:
+            col_exp1 = st.container()
 
         with col_exp1:
             st.markdown("**1. Site Supply Data**")
             st.caption(
                 "The download has one row per supply record in 'Site Supplies', with "
                 "'Supply Cycle' and the site's total for that cycle in litres and MT next to "
-                "Site ID, plus a 'Site Totals' sheet with one row per site and supply cycle."
+                "Site ID, plus 'Site Total (All Cycles)' showing the site's full total across "
+                "every cycle so a single matched row always gives the complete figure. "
+                "The 'Site Totals' sheet has one row per site and supply cycle."
             )
             drop_cols = ["_status_key"] if is_admin else ["_status_key", "Approved CPD"]
             export_supply_df = fmt_date_cols(filtered_math_df, ["Supply Date"]).drop(
@@ -1688,10 +1686,14 @@ if not df_math.empty:
                 site_total_l = export_supply_df.groupby(cycle_cols)["Total QTY Supplied"].transform("sum")
                 export_supply_df["Site Total Supplied (L)"] = site_total_l.round(2)
                 export_supply_df["Site Total Supplied (MT)"] = (site_total_l / LITRES_PER_MT).round(2)
+                site_all_l = export_supply_df.groupby("Site ID")["Total QTY Supplied"].transform("sum")
+                export_supply_df["Site Total (All Cycles) (L)"] = site_all_l.round(2)
+                export_supply_df["Site Total (All Cycles) (MT)"] = (site_all_l / LITRES_PER_MT).round(2)
                 export_cols = list(export_supply_df.columns)
                 anchor = "Supply Cycle" if "Supply Cycle" in export_cols else "Site ID"
                 insert_at = export_cols.index(anchor) + 1 if anchor in export_cols else len(export_cols)
-                new_cols = ["Site Total Supplied (L)", "Site Total Supplied (MT)"]
+                new_cols = ["Site Total Supplied (L)", "Site Total Supplied (MT)",
+                            "Site Total (All Cycles) (L)", "Site Total (All Cycles) (MT)"]
                 export_cols = [c for c in export_cols if c not in new_cols]
                 for offset, cname in enumerate(new_cols):
                     export_cols.insert(insert_at + offset, cname)
@@ -1728,10 +1730,16 @@ if not df_math.empty:
                 site_totals_df = site_totals_df.sort_values("Total Supplied (L)", ascending=False)
             site_totals_df["Total Supplied (L)"] = site_totals_df["Total Supplied (L)"].round(2)
             site_totals_df["Total Supplied (MT)"] = site_totals_df["Total Supplied (MT)"].round(2)
+            all_cycles_l = filtered_math_df.groupby("Site ID")["Total QTY Supplied"].sum()
+            site_totals_df["Total (All Cycles) (L)"] = site_totals_df["Site ID"].map(all_cycles_l).round(2)
+            site_totals_df["Total (All Cycles) (MT)"] = (
+                site_totals_df["Site ID"].map(all_cycles_l) / LITRES_PER_MT
+            ).round(2)
             site_total_order = [c for c in ["Site ID", "Supply Cycle"] if c in site_totals_df.columns] + [
                 c for c in ["Region", "Cluster", "Zones", "Type of supply"] if c in site_totals_df.columns
             ] + ["Supply Records", "First Supply", "Last Supply",
-                 "Total Supplied (L)", "Total Supplied (MT)"]
+                 "Total Supplied (L)", "Total Supplied (MT)",
+                 "Total (All Cycles) (L)", "Total (All Cycles) (MT)"]
             site_totals_df = fmt_date_cols(
                 site_totals_df[site_total_order], ["First Supply", "Last Supply"]
             )
@@ -1759,29 +1767,24 @@ if not df_math.empty:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
 
-        with col_exp2:
-            st.markdown("**2. Waybill Data**")
-            if not filtered_wb.empty:
-                if is_admin:
+        if is_admin:
+            with col_exp2:
+                st.markdown("**2. Waybill Data**")
+                if not filtered_wb.empty:
                     export_wb_df = fmt_date_cols(filtered_wb, ["Trip Start Date", "Trip End Date"])
-                else:
-                    export_wb_df = fmt_date_cols(
-                        filtered_wb[[c for c in TEAM_WAYBILL_COLS if c in filtered_wb.columns]],
-                        ["Trip Start Date", "Trip End Date"],
+
+                    output_wb = io.BytesIO()
+                    with pd.ExcelWriter(output_wb, engine="openpyxl") as writer:
+                        export_wb_df.to_excel(writer, index=False, sheet_name="Waybills")
+
+                    st.download_button(
+                        label="📥 Download Waybill Data (.xlsx)",
+                        data=output_wb.getvalue(),
+                        file_name=f"waybills_{wb_filter_date}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     )
-
-                output_wb = io.BytesIO()
-                with pd.ExcelWriter(output_wb, engine="openpyxl") as writer:
-                    export_wb_df.to_excel(writer, index=False, sheet_name="Waybills")
-
-                st.download_button(
-                    label="📥 Download Waybill Data (.xlsx)",
-                    data=output_wb.getvalue(),
-                    file_name=f"waybills_{wb_filter_date}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
-            else:
-                st.info("No waybill data available to download.")
+                else:
+                    st.info("No waybill data available to download.")
 
 else:
     st.info("👆 Database is empty. Use the sidebar to upload an Excel file or add manual entries!")
