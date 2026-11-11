@@ -35,9 +35,13 @@ COHORT_COLORS = {
     "recent": "#28a745", "due_soon": "#ffc107", "overdue": "#dc3545",
     "steady": "#fd7e14", "no_data": "#6c757d",
 }
+VARIANCE_LABELS = {
+    "target": "🟢 On Target", "slight": "🟡 Slight Variance",
+    "high": "🔴 High Variance", "na": "⚪ N/A",
+}
 
 COOKIE_TTL_SECONDS = 30 * 24 * 60 * 60
-APP_VERSION = "2026-11-09b multi-select filters + admin-only waybills"
+APP_VERSION = "2026-11-10d duplicate-delivery collapse (CPD fix)"
 LITRES_PER_MT = 1960  # 1 Metric Ton of fuel = 1,960 litres
 SUPPLY_NUM_COLS = [
     "Qty before supply Tank 1",
@@ -131,13 +135,19 @@ def supply_cycle_parts(dates, types):
 
 
 def supply_upsert_key(site_id, supply_day, type_value, cycle_label):
-    """Re-uploading a cycle updates its rows instead of adding duplicates."""
+    """A delivery is identified by site, date, supply type and cycle.
+
+    The date must be part of the key: one cycle can hold several deliveries
+    that share the same type label (for example two 'Oct 1st Supply' visits),
+    and merging them would add their readings together and destroy the
+    previous-supply baseline, which is what the CPD is measured from."""
     type_text = " ".join(str(type_value if type_value is not None else "").split()).lower()
     if pd.isnull(supply_day):
-        return (str(site_id), "date", None)
+        return (str(site_id), "date", None, None)
+    day = pd.Timestamp(supply_day).date()
     if type_text and type_text != "nan" and pd.notna(cycle_label):
-        return (str(site_id), type_text, str(cycle_label))
-    return (str(site_id), "date", supply_day.date())
+        return (str(site_id), str(cycle_label), type_text, day)
+    return (str(site_id), "date", day, day)
 
 
 def get_col(df, name, fill=np.nan):
@@ -379,15 +389,24 @@ def prepare_supplies(df):
     if df.empty:
         return df, pd.DataFrame()
 
-    agg_candidates = {
-        "QTY supplied Tank 1": "sum", "QTY supplied Tank 2": "sum",
-        "Qty before supply Tank 1": "sum", "Qty before supply Tank 2": "sum",
-        "Approved CPD": "mean", "Region": "first", "Cluster": "first",
-        "Zones": "first", "Bobtail number": "last", "Type of supply": "last",
-        "doc_id": "first",
-    }
-    agg_dict = {k: v for k, v in agg_candidates.items() if k in df.columns}
-    df_math = df.groupby(["Site ID", "Supply Date"], as_index=False).agg(agg_dict)
+    # Several rows can share one site and date when a delivery was entered
+    # twice (same bobtail, same before-reading, possibly a corrected quantity).
+    # Adding them together doubles the tank level and inflates the next CPD,
+    # so keep the record that leaves the tank fullest instead.
+    after_level = (
+        num_col(df, "Qty before supply Tank 1") + num_col(df, "QTY supplied Tank 1")
+        + num_col(df, "Qty before supply Tank 2") + num_col(df, "QTY supplied Tank 2")
+    )
+    supplied_level = (
+        num_col(df, "QTY supplied Tank 1") + num_col(df, "QTY supplied Tank 2")
+    )
+    df_math = (
+        df.assign(__after_level__=after_level, __supplied__=supplied_level)
+        .sort_values(["Site ID", "Supply Date", "__after_level__", "__supplied__"])
+        .drop_duplicates(["Site ID", "Supply Date"], keep="last")
+        .drop(columns=["__after_level__", "__supplied__"])
+        .reset_index(drop=True)
+    )
     return df, df_math
 
 
@@ -558,7 +577,7 @@ if input_method == "Manual Entry":
                         # Team may correct quantities but not the approved target.
                         record.pop("Approved CPD", None)
                     db.collection("supplies").document(str(existing_id)).update(record)
-                    st.success("✅ This site already had this supply type in this cycle — it was updated, no duplicate created.")
+                    st.success("✅ This site already has a supply on this date with this supply type — it was updated, no duplicate created.")
                 else:
                     db.collection("supplies").add(record)
                     st.success("✅ Saved successfully!")
@@ -752,35 +771,34 @@ elif input_method == "Upload Excel File":
                         )
                     ]
 
-                    # Rows describing the same delivery (same site, same supply
-                    # type, same cycle) are added together before writing, so one
-                    # upload can never store a delivery twice.
+                    # Rows repeating the same delivery (same site, date, supply
+                    # type and cycle) are the same physical delivery entered
+                    # twice, so one record is kept rather than their quantities
+                    # being added. Adding them doubles the tank level and
+                    # inflates every CPD measured after that date.
                     for col in SUPPLY_NUM_COLS:
                         temp_df[col] = temp_df[col].apply(clean_numeric)
                     merged_rows = 0
                     if temp_df["__key__"].duplicated().any():
                         merged_rows = int(temp_df["__key__"].duplicated().sum())
+                        temp_df["__after_level__"] = (
+                            temp_df["Qty before supply Tank 1"] + temp_df["QTY supplied Tank 1"]
+                            + temp_df["Qty before supply Tank 2"] + temp_df["QTY supplied Tank 2"]
+                        )
+                        temp_df["__supplied__"] = (
+                            temp_df["QTY supplied Tank 1"] + temp_df["QTY supplied Tank 2"]
+                        )
                         temp_df = (
-                            temp_df.groupby("__key__", as_index=False, sort=False)
-                            .agg({
-                                "Site ID": "first",
-                                "Region": "first",
-                                "Cluster": "first",
-                                "Zones": "first",
-                                "Qty before supply Tank 1": "sum",
-                                "QTY supplied Tank 1": "sum",
-                                "Qty before supply Tank 2": "sum",
-                                "QTY supplied Tank 2": "sum",
-                                "Approved CPD": "mean",
-                                "Supply Date": "last",
-                                "Bobtail number": "last",
-                                "Type of supply": "last",
-                                "__date__": "last",
-                                "__cycle__": "last",
-                            })
+                            temp_df.sort_values(
+                                ["Site ID", "Supply Date", "__after_level__", "__supplied__"]
+                            )
+                            .drop_duplicates("__key__", keep="last")
+                            .drop(columns=["__after_level__", "__supplied__"])
+                            .reset_index(drop=True)
                         )
 
                     existing = {}
+                    existing_by_day = {}
                     if not df_raw.empty and {"Site ID", "Supply Date", "doc_id"} <= set(df_raw.columns):
                         raw_types = (
                             df_raw["Type of supply"] if "Type of supply" in df_raw.columns
@@ -793,10 +811,14 @@ elif input_method == "Upload Excel File":
                         ):
                             if pd.notnull(day) and pd.notnull(doc):
                                 existing[supply_upsert_key(site, day, type_value, cycle)] = doc
+                                existing_by_day.setdefault(
+                                    (str(site), pd.Timestamp(day).date()), []
+                                ).append(doc)
 
                     count = 0
                     skipped = 0
                     new_rows = 0
+                    used_docs = set()
                     total_rows = len(temp_df)
                     progress_bar = st.sidebar.progress(0.0)
                     batch = db.batch()
@@ -822,12 +844,26 @@ elif input_method == "Upload Excel File":
                                 "Type of supply": str(row.get("Type of supply", "1st supply")).strip(),
                             }
                             doc_id = existing.get(row["__key__"])
+                            if not doc_id:
+                                # A corrected cycle label changes the key; fall back to
+                                # the same site and date so the record is updated, not
+                                # duplicated on top of itself.
+                                same_day = existing_by_day.get(
+                                    (str(row["Site ID"]), supply_day.date()), []
+                                )
+                                if len(same_day) == 1 and same_day[0] not in used_docs:
+                                    doc_id = same_day[0]
                             if doc_id:
+                                used_docs.add(str(doc_id))
                                 batch.update(db.collection("supplies").document(str(doc_id)), record)
+                                existing[row["__key__"]] = doc_id
                             else:
                                 ref = db.collection("supplies").document()
                                 batch.set(ref, record)
                                 existing[row["__key__"]] = ref.id
+                                existing_by_day.setdefault(
+                                    (str(row["Site ID"]), supply_day.date()), []
+                                ).append(ref.id)
                                 new_rows += 1
                             count += 1
                             pending += 1
@@ -841,8 +877,9 @@ elif input_method == "Upload Excel File":
                     st.sidebar.success(f"✅ Wrote {count} rows ({new_rows} new, {count - new_rows} updated).")
                     if merged_rows:
                         st.sidebar.info(
-                            f"ℹ️ {merged_rows} row(s) repeated the same site, supply type and cycle; "
-                            "they were added together instead of being stored twice."
+                            f"ℹ️ {merged_rows} duplicate row(s) repeated the same delivery (same site, date, "
+                            "supply type and cycle). One record was kept per delivery (the one leaving the "
+                            "tank fullest) instead of adding them together."
                         )
                     if skipped:
                         st.sidebar.warning(f"⚠️ Skipped {skipped} rows with no Site ID or an unparseable Supply Date.")
@@ -999,6 +1036,9 @@ def build_consumption_model(base_df, today, recent_days, due_soon_days):
 
     approved = num_col(d, "Approved CPD")
     d["Approved CPD"] = approved
+    # A new cycle file often carries quantities only. Keep the site's last known
+    # approved target so variance is still measured instead of turning N/A.
+    d["Approved CPD (Effective)"] = approved.where(approved > 0).groupby(d["Site ID"]).ffill()
     d["Days_Fuel_Last"] = np.nan
     can_run = d["Estimated CPD"].gt(0)
     d.loc[can_run, "Days_Fuel_Last"] = (
@@ -1015,31 +1055,54 @@ def build_consumption_model(base_df, today, recent_days, due_soon_days):
 
     d["Supply Alert"] = [_supply_alert(nd, today) for nd in d["Estimated Next Supply Date"]]
 
-    d["CPD Variance"] = approved - d["Estimated CPD"]
+    d["CPD Variance"] = d["Approved CPD (Effective)"] - d["Estimated CPD"]
     status_key = d.apply(_variance_key, axis=1)
     d["_status_key"] = status_key
-    labels = {"target": "🟢 On Target", "slight": "🟡 Slight Variance",
-              "high": "🔴 High Variance", "na": "⚪ N/A"}
-    d["Variance Status"] = status_key.map(labels)
+    d["Variance Status"] = status_key.map(VARIANCE_LABELS)
+
+    # Spell out why a supply produced no CPD, so an N/A row is explainable.
+    d["CPD Reason"] = ""
+    no_prev = d["Prev_Supply_Date"].isna()
+    no_gap = (~no_prev) & ~(d["Days_Diff"] > 0)
+    consumption = d["Total_Consumed"].fillna(0)
+    zero_use = (~no_prev) & (d["Days_Diff"] > 0) & (consumption <= 0)
+    no_target = ((~no_prev) & (d["Days_Diff"] > 0) & (consumption > 0)
+                 & d["Approved CPD (Effective)"].isna())
+    d.loc[no_prev, "CPD Reason"] = "No earlier supply recorded for this site"
+    d.loc[no_gap, "CPD Reason"] = "Previous supply is on the same date"
+    d.loc[zero_use, "CPD Reason"] = "Consumption is zero or negative (check before-supply readings)"
+    d.loc[no_target, "CPD Reason"] = "No approved CPD on record"
 
     sites = []
     for site, g in d.groupby("Site ID", sort=False):
         g = g.sort_values("Supply Date")
         last = g.iloc[-1]
+        # A CPD is valid whenever the site has an earlier supply, even if that
+        # supply belongs to a previous cycle; only a zero/negative gap is unusable.
         cpd_series = g["Estimated CPD"].dropna()
-        site_approved = safe_float(last.get("Approved CPD"))
+        usable_cpd = cpd_series[cpd_series > 0]
+        targets = g["Approved CPD (Effective)"].dropna()
+        targets = targets[targets > 0]
+        site_approved = float(targets.iloc[-1]) if not targets.empty else 0.0
+        last_cpd = last["Estimated CPD"]
 
-        if not cpd_series.empty:
-            cpd = float(cpd_series.iloc[-1])
+        if not usable_cpd.empty and pd.notnull(last_cpd) and last_cpd > 0:
+            cpd = float(last_cpd)
             cpd_basis = "Last supply gap"
+        elif not usable_cpd.empty:
+            cpd = float(usable_cpd.iloc[-1])
+            cpd_basis = (
+                f"Carried forward from last calculated supply "
+                f"({pd.Timestamp(g.loc[usable_cpd.index[-1], 'Supply Date']):%d %b %Y})"
+            )
         elif site_approved > 0:
             cpd = site_approved
             cpd_basis = "Approved CPD (no history)"
         else:
             cpd = np.nan
-            cpd_basis = "Unknown"
+            cpd_basis = str(last["CPD Reason"] or "No usable supply history")
 
-        avg_cpd = float(cpd_series.mean()) if not cpd_series.empty else np.nan
+        avg_cpd = float(usable_cpd.mean()) if not usable_cpd.empty else np.nan
         gaps = g["Days_Diff"].dropna()
         avg_gap = float(gaps.mean()) if not gaps.empty else np.nan
 
@@ -1052,6 +1115,10 @@ def build_consumption_model(base_df, today, recent_days, due_soon_days):
         next_supply = last["Estimated Next Supply Date"]
         days_to_next = (next_supply - today).days if next_supply else np.nan
         category = _classify(days_since, days_to_next, cpd, recent_days, due_soon_days)
+
+        # Only a measured CPD can produce a variance; the approved fallback is
+        # not evidence of actual consumption.
+        target_status = _variance_from(cpd, site_approved) if not usable_cpd.empty else "na"
 
         sites.append({
             "Site ID": site,
@@ -1075,7 +1142,7 @@ def build_consumption_model(base_df, today, recent_days, due_soon_days):
             "Supply Cohort Key": category,
             "Supply Cohort": COHORT_LABELS[category],
             "Supply Alert": last["Supply Alert"],
-            "Variance Status": last["Variance Status"],
+            "Variance Status": VARIANCE_LABELS[target_status],
             "Total QTY Supplied": last["Total QTY Supplied"],
             "Bobtail number": last.get("Bobtail number", ""),
         })
@@ -1088,13 +1155,17 @@ def build_consumption_model(base_df, today, recent_days, due_soon_days):
     return d, sites_df
 
 
-def _variance_key(row):
-    cpd = row["Estimated CPD"]
-    app = row["Approved CPD"]
-    if pd.isnull(cpd) or cpd == 0 or app == 0:
+def _variance_from(cpd, approved):
+    """Variance needs both a usable CPD and a target; the CPD may have been
+    calculated on an earlier supply, or the target may come from an earlier cycle."""
+    if pd.isnull(cpd) or cpd <= 0 or pd.isnull(approved) or approved <= 0:
         return "na"
-    pct = abs(app - cpd) / app
+    pct = abs(approved - cpd) / approved
     return "target" if pct <= 0.05 else ("slight" if pct <= 0.15 else "high")
+
+
+def _variance_key(row):
+    return _variance_from(row["Estimated CPD"], row["Approved CPD (Effective)"])
 
 
 def _supply_alert(next_date, today):
@@ -1278,10 +1349,10 @@ if not df_math.empty:
             total_sites_tracked = df_math["Site ID"].nunique()
 
             valid_var = filtered_math_df[
-                (filtered_math_df["Estimated CPD"] > 0) & (filtered_math_df["Approved CPD"] > 0)
+                (filtered_math_df["Estimated CPD"] > 0) & (filtered_math_df["Approved CPD (Effective)"] > 0)
             ]
             high_variance_count = int(
-                ((valid_var["CPD Variance"].abs() / valid_var["Approved CPD"]) > 0.15).sum()
+                ((valid_var["CPD Variance"].abs() / valid_var["Approved CPD (Effective)"]) > 0.15).sum()
             ) if not valid_var.empty else 0
 
             if "Supply Alert" in filtered_sites.columns:
@@ -1401,7 +1472,7 @@ if not df_math.empty:
                     st.bar_chart(filtered_math_df.groupby("Region")[region_col].sum(),
                                  use_container_width=True)
             with chart_col2:
-                st.subheader("Variance Status Distribution")
+                st.subheader("Variance Status Distribution (per supply)")
                 status_counts = filtered_math_df["_status_key"].value_counts().rename_axis("_status_key").reset_index(name="Count")
                 labels = {"target": "🟢 On Target", "slight": "🟡 Slight Variance",
                           "high": "🔴 High Variance", "na": "⚪ N/A"}
@@ -1410,8 +1481,16 @@ if not df_math.empty:
                 status_counts["Status"] = status_counts["_status_key"].map(labels)
                 fig = px.bar(status_counts, x="Status", y="Count", color="Status",
                              color_discrete_map=color_map, text="Count")
-                fig.update_layout(showlegend=False, yaxis_title="Count", xaxis_title="")
+                fig.update_layout(showlegend=False, yaxis_title="Supply records", xaxis_title="")
                 st.plotly_chart(fig, use_container_width=True)
+                if not filtered_sites.empty and "Variance Status" in filtered_sites.columns:
+                    na_sites = int((filtered_sites["Variance Status"] == VARIANCE_LABELS["na"]).sum())
+                    st.caption(
+                        f"Counts are supply records, not sites. Each site's first recorded supply has no "
+                        f"earlier reading, so it is always N/A — that alone is one N/A record per site. "
+                        f"At site level, {na_sites} of {len(filtered_sites)} sites have no measurable CPD; "
+                        f"see 'Sites without a CPD — reason breakdown' below."
+                    )
         else:
             st.subheader(region_title)
             if "Region" in filtered_math_df.columns:
@@ -1527,6 +1606,18 @@ if not df_math.empty:
                     if cname in status_view.columns:
                         status_view[cname] = status_view[cname].round(2)
                 st.dataframe(status_view, use_container_width=True, hide_index=True)
+                st.caption(
+                    "A CPD is calculated from the site's previous supply even when that supply belongs to "
+                    "an earlier cycle. N/A remains only when the site has no usable earlier supply (or "
+                    "consumption came out zero/negative); a site with no measured CPD shows its approved "
+                    "target instead, and 'CPD Basis' says which value is shown."
+                )
+                with st.expander("Sites without a CPD — reason breakdown"):
+                    basis_counts = (
+                        filtered_sites["CPD Basis"].fillna("Unknown").value_counts()
+                        .rename_axis("CPD Basis").reset_index(name="Sites")
+                    )
+                    st.dataframe(basis_counts, use_container_width=True, hide_index=True)
 
         st.markdown("---")
         st.subheader("📜 Site History & CPD Trend")
@@ -1535,8 +1626,9 @@ if not df_math.empty:
             history_site = st.selectbox("Select Site ID to view history:", sorted(df_math["Site ID"].unique().tolist()))
             site_hist_df = df_math[df_math["Site ID"] == history_site].sort_values("Supply Date")
             hist_cols = ["Supply Date", "Type of supply", "Total QTY Supplied", "Total QTY Supplied (MT)",
-                         "Total_Consumed", "Days_Diff", "Estimated CPD", "Approved CPD", "CPD Variance",
-                         "Variance Status", "Reading Check"]
+                         "Total_Consumed", "Days_Diff", "Estimated CPD", "Approved CPD",
+                         "Approved CPD (Effective)", "CPD Variance",
+                         "Variance Status", "CPD Reason", "Reading Check"]
             hist_view = site_hist_df[[c for c in hist_cols if c in site_hist_df.columns]].copy()
             if "Total QTY Supplied (MT)" in hist_view.columns:
                 hist_view["Total QTY Supplied (MT)"] = hist_view["Total QTY Supplied (MT)"].round(2)
@@ -1687,12 +1779,23 @@ if not df_math.empty:
                 "'Supply Cycle' and the site's total for that cycle in litres and MT next to "
                 "Site ID, plus 'Site Total (All Cycles)' showing the site's full total across "
                 "every cycle so a single matched row always gives the complete figure. "
-                "The 'Site Totals' sheet has one row per site and supply cycle."
+                "'CPD Calculated (This Supply)' keeps the CPD every supply produced from the "
+                "site's previous supply, whichever cycle that supply came from. "
+                "The 'Site Totals' sheet has one row per site and supply cycle; the "
+                "'CPD by Supply' sheet gives each site one column per supply (CPD Oct 1, "
+                "CPD Oct 2, ... CPD Nov 1) so the whole CPD history reads across."
             )
             drop_cols = ["_status_key"] if is_admin else ["_status_key", "Approved CPD"]
-            export_supply_df = fmt_date_cols(filtered_math_df, ["Supply Date"]).drop(
-                columns=drop_cols, errors="ignore"
-            )
+            export_supply_df = fmt_date_cols(
+                filtered_math_df, ["Supply Date", "Prev_Supply_Date"]
+            ).drop(columns=drop_cols, errors="ignore")
+            export_supply_df = export_supply_df.rename(columns={
+                "Estimated CPD": "CPD Calculated (This Supply)",
+                "Prev_Supply_Date": "Previous Supply Date",
+                "Days_Diff": "Days Since Previous Supply",
+                "Approved CPD (Effective)": "Approved CPD Used",
+                "CPD Reason": "CPD Not Calculated Because",
+            })
 
             if {"Site ID", "Total QTY Supplied"} <= set(export_supply_df.columns):
                 cycle_cols = [c for c in ["Site ID", "Supply Cycle"] if c in export_supply_df.columns]
@@ -1712,6 +1815,17 @@ if not df_math.empty:
                     export_cols.insert(insert_at + offset, cname)
                 export_supply_df = export_supply_df[export_cols]
 
+                cpd_cols = [c for c in ("CPD Calculated (This Supply)", "Approved CPD Used",
+                                        "CPD Variance", "Variance Status", "CPD Not Calculated Because",
+                                        "Previous Supply Date", "Days Since Previous Supply")
+                            if c in export_supply_df.columns]
+                if cpd_cols:
+                    rest = [c for c in export_supply_df.columns if c not in cpd_cols]
+                    anchor = next((c for c in ("Site Total (All Cycles) (MT)", "Supply Cycle", "Site ID")
+                                   if c in rest), None)
+                    at = rest.index(anchor) + 1 if anchor else len(rest)
+                    export_supply_df = export_supply_df[rest[:at] + cpd_cols + rest[at:]]
+
             group_cols = [c for c in ["Site ID", "Supply Cycle"] if c in filtered_math_df.columns]
             site_agg = {
                 "Supply Records": ("Supply Date", "count"),
@@ -1723,6 +1837,13 @@ if not df_math.empty:
             for cname in ["Region", "Cluster", "Zones", "Type of supply"]:
                 if cname in filtered_math_df.columns:
                     site_agg[cname] = (cname, "last")
+            for src, label in [("Estimated CPD", "CPD Calculated (Latest in Cycle)"),
+                               ("Approved CPD (Effective)", "Approved CPD Used"),
+                               ("CPD Variance", "CPD Variance"),
+                               ("Variance Status", "Variance Status"),
+                               ("CPD Reason", "CPD Not Calculated Because")]:
+                if src in filtered_math_df.columns:
+                    site_agg[label] = (src, "last")
 
             site_totals_df = (
                 filtered_math_df.sort_values("Supply Date")
@@ -1752,15 +1873,80 @@ if not df_math.empty:
                 c for c in ["Region", "Cluster", "Zones", "Type of supply"] if c in site_totals_df.columns
             ] + ["Supply Records", "First Supply", "Last Supply",
                  "Total Supplied (L)", "Total Supplied (MT)",
-                 "Total (All Cycles) (L)", "Total (All Cycles) (MT)"]
+                 "Total (All Cycles) (L)", "Total (All Cycles) (MT)",
+                 "CPD Calculated (Latest in Cycle)", "Approved CPD Used", "CPD Variance",
+                 "Variance Status", "CPD Not Calculated Because"]
+            site_total_order = [c for c in site_total_order if c in site_totals_df.columns]
             site_totals_df = fmt_date_cols(
                 site_totals_df[site_total_order], ["First Supply", "Last Supply"]
             )
+
+            # One column per supply, numbered inside its cycle (CPD Oct 1,
+            # CPD Oct 2, ... CPD Nov 1). Numbering is built on all loaded
+            # supplies so the label still means the same delivery after the
+            # date filter narrows the report.
+            cpd_by_supply_df = pd.DataFrame()
+            if is_admin and not filtered_math_df.empty and "Estimated CPD" in filtered_math_df.columns:
+                all_supplies = df_math[["Site ID", "Supply Cycle", "Supply Date"]].copy()
+                all_supplies["__cycle_start__"] = pd.to_datetime(
+                    all_supplies["Supply Cycle"], format="%b %Y", errors="coerce"
+                )
+                all_supplies = all_supplies.sort_values(["Site ID", "Supply Date"])
+                all_supplies["__seq__"] = (
+                    all_supplies.groupby(["Site ID", "Supply Cycle"], dropna=False).cumcount() + 1
+                )
+                month_abbr = (
+                    all_supplies["Supply Cycle"].fillna("").astype(str)
+                    .str.extract(r"^([A-Za-z]{3})", expand=False).fillna("")
+                )
+                all_supplies["__col__"] = np.where(
+                    month_abbr != "",
+                    "CPD " + month_abbr + " " + all_supplies["__seq__"].astype(str),
+                    "CPD " + all_supplies["__seq__"].astype(str),
+                )
+                hist = filtered_math_df.join(
+                    all_supplies[["__cycle_start__", "__seq__", "__col__"]]
+                ).sort_values(["Site ID", "Supply Date"])
+
+                col_order = (
+                    hist[["__col__", "__cycle_start__", "__seq__"]]
+                    .drop_duplicates("__col__")
+                    .assign(__no_cycle__=lambda x: x["__cycle_start__"].isna())
+                    .sort_values(["__no_cycle__", "__cycle_start__", "__seq__"])["__col__"]
+                    .tolist()
+                )
+                pivot = hist.pivot_table(
+                    index="Site ID", columns="__col__", values="Estimated CPD", aggfunc="first"
+                )
+                pivot = pivot.reindex(columns=[c for c in col_order if c in pivot.columns]).round(1)
+
+                meta_cols = [c for c in ("Region", "Cluster", "Zones") if c in hist.columns]
+                meta = hist.groupby("Site ID").agg(**{c: (c, "last") for c in meta_cols})
+                cpd_by_supply_df = meta.join(pivot).reset_index()
+                cpd_by_supply_df["Latest CPD"] = (
+                    cpd_by_supply_df["Site ID"]
+                    .map(hist.groupby("Site ID")["Estimated CPD"].last()).round(1)
+                )
+                cpd_by_supply_df["Approved CPD"] = (
+                    cpd_by_supply_df["Site ID"]
+                    .map(hist.groupby("Site ID")["Approved CPD (Effective)"].last()).round(1)
+                )
+                if not filtered_sites.empty and {"Site ID", "Variance Status"} <= set(filtered_sites.columns):
+                    status_by_site = (
+                        filtered_sites.drop_duplicates("Site ID")
+                        .set_index("Site ID")["Variance Status"]
+                    )
+                    cpd_by_supply_df["Variance Status"] = (
+                        cpd_by_supply_df["Site ID"].map(status_by_site)
+                    )
+                cpd_by_supply_df = cpd_by_supply_df.sort_values("Site ID").reset_index(drop=True)
 
             output_supply = io.BytesIO()
             with pd.ExcelWriter(output_supply, engine="openpyxl") as writer:
                 export_supply_df.to_excel(writer, index=False, sheet_name="Site Supplies")
                 site_totals_df.to_excel(writer, index=False, sheet_name="Site Totals")
+                if not cpd_by_supply_df.empty:
+                    cpd_by_supply_df.to_excel(writer, index=False, sheet_name="CPD by Supply")
                 pd.DataFrame({
                     "Item": ["App version", "Report generated", "Date range", "Litres per MT",
                              "Supply cycle basis"],
